@@ -47,7 +47,7 @@ export const exportToExcel = (batch, students, activities, attendance) => {
   const ws2 = XLSX.utils.json_to_sheet(activityData);
   XLSX.utils.book_append_sheet(wb, ws2, "Activity Summary");
 
-  XLSX.writeFile(wb, `Batch_Export_${batch.name.replace(/\\s+/g, '_')}.xlsx`);
+  XLSX.writeFile(wb, `Batch_Export_${batch.name.replace(/\s+/g, '_')}.xlsx`);
 };
 
 export const exportActivityAttendance = (activity, students, checksDict) => {
@@ -64,6 +64,50 @@ export const exportActivityAttendance = (activity, students, checksDict) => {
   const ws = XLSX.utils.json_to_sheet(data);
   XLSX.utils.book_append_sheet(wb, ws, "Attendance");
 
-  const safeName = activity.name.replace(/\\s+/g, '_');
+  const safeName = activity.name.replace(/\s+/g, '_');
   XLSX.writeFile(wb, `Attendance_${safeName}_${activity.date}.xlsx`);
+};
+
+export const exportActivitiesGrid = (batch, students, activities, attendance) => {
+  const wsData = [];
+  const validTypes = ['COMMUNITY', 'CAMPUS', 'ORIENTATION'];
+
+  validTypes.forEach(type => {
+    const typeActs = activities.filter(a => a.type.toUpperCase() === type.toUpperCase()).sort((a,b) => new Date(a.date) - new Date(b.date));
+    
+    wsData.push([type]);
+    
+    const row2 = [''];
+    typeActs.forEach(a => row2.push(a.name));
+    row2.push('Total hour');
+    wsData.push(row2);
+    
+    const row3 = [''];
+    typeActs.forEach(a => row3.push(a.date));
+    wsData.push(row3);
+    
+    const sortedStudents = [...students].sort((a, b) => a.name.localeCompare(b.name));
+    sortedStudents.forEach(s => {
+      let rowObj = [s.name];
+      let total = 0;
+      typeActs.forEach(a => {
+        const att = attendance.find(log => log.activityId === a.id && log.studentId === s.id);
+        if (att && att.present) {
+          rowObj.push(Number(a.hours));
+          total += Number(a.hours);
+        } else {
+          rowObj.push('');
+        }
+      });
+      rowObj.push(total);
+      wsData.push(rowObj);
+    });
+    
+    wsData.push([]);
+  });
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  XLSX.utils.book_append_sheet(wb, ws, "Activities Grid Component");
+  XLSX.writeFile(wb, `Activities_Grid_${batch.name.replace(/\s+/g, '_')}.xlsx`);
 };

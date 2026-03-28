@@ -1,14 +1,29 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useStore } from './store';
-import { exportToExcel, exportActivityAttendance } from './utils';
+import { exportToExcel, exportActivityAttendance, exportActivitiesGrid } from './utils';
 import { Download, LogOut, Users, BookOpen, BarChart3, ChevronLeft, Plus, Trash2, CheckCircle2, Settings } from 'lucide-react';
 
 export default function App() {
-  const { currentUser, logout } = useStore();
+  const { currentUser, logout, isLoadedFromServer, loadFromServer } = useStore();
   const [currentView, setCurrentView] = useState('DASHBOARD'); // DASHBOARD | BATCH_DETAIL | ATTENDANCE | STUDENT_DETAIL | SETTINGS
   const [activeBatchId, setActiveBatchId] = useState(null);
   const [activeActivityId, setActiveActivityId] = useState(null);
   const [activeStudentId, setActiveStudentId] = useState(null);
+
+  useEffect(() => {
+    if (!isLoadedFromServer) {
+      loadFromServer();
+    }
+  }, [isLoadedFromServer, loadFromServer]);
+
+  if (!isLoadedFromServer) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column' }}>
+        <h2 style={{color: 'var(--primary)'}}>Connecting to NoSQL Database...</h2>
+        <p style={{color: 'var(--text-muted)'}}>Synchronizing Collections</p>
+      </div>
+    );
+  }
 
   if (!currentUser) return <LoginView />;
 
@@ -185,7 +200,7 @@ function DashboardView({ onSelectBatch }) {
           <div key={b.id} className="list-item">
             <h3 onClick={() => onSelectBatch(b.id)} style={{ flex: 1, cursor: 'pointer' }}>{b.name}</h3>
             <button className="btn btn-danger" onClick={() => {
-              if(confirm('Delete? Type name to confirm:') || true) deleteBatch(b.id);
+              if(confirm(`Are you sure you want to permanently delete "${b.name}" and all associated students, activities, and data?`)) deleteBatch(b.id);
             }}><Trash2 size={16}/></button>
           </div>
         ))}
@@ -265,7 +280,7 @@ function StudentsTab({ items, batchId, onViewStudent }) {
             <div style={{ cursor: 'pointer', flex: 1 }} onClick={() => onViewStudent(s.id)}>
               <strong style={{ color: 'var(--primary)' }}>{s.name}</strong> • <span style={{ color: 'var(--text-muted)' }}>{s.className}</span>
             </div>
-            <button className="btn btn-danger" onClick={() => deleteStudent(s.id)}>Delete</button>
+            <button className="btn btn-danger" onClick={() => { if(confirm(`Delete student ${s.name}?`)) deleteStudent(s.id); }}>Delete</button>
           </div>
         ))}
       </div>
@@ -274,7 +289,7 @@ function StudentsTab({ items, batchId, onViewStudent }) {
 }
 
 function ActivitiesTab({ items, batchId, onAttend }) {
-  const { addActivity, deleteActivity } = useStore();
+  const { addActivity, deleteActivity, batches, students, attendance } = useStore();
   const [name, setName] = useState('');
   const [type, setType] = useState('Orientation');
   const [hours, setHours] = useState('1');
@@ -282,6 +297,12 @@ function ActivitiesTab({ items, batchId, onAttend }) {
 
   // Reverse list placing newest created activities on top
   const sortedItems = [...items].sort((a, b) => b.id - a.id);
+
+  const handleExportGrid = () => {
+    const batch = batches.find(b => b.id === batchId);
+    const batchStudents = students.filter(s => s.batchId === batchId);
+    exportActivitiesGrid(batch, batchStudents, items, attendance);
+  };
 
   return (
     <div>
@@ -295,6 +316,7 @@ function ActivitiesTab({ items, batchId, onAttend }) {
         <input className="input-field" type="number" placeholder="Hours" value={hours} onChange={e=>setHours(e.target.value)} style={{ width: 80, marginBottom: 0 }} />
         <input className="input-field" type="date" value={date} onChange={e=>setDate(e.target.value)} style={{ width: 140, marginBottom: 0 }} />
         <button className="btn btn-primary" style={{ marginBottom: 0 }} onClick={() => { if(name) { addActivity({batchId, name, type, hours, date}); setName(''); }}}>Add Activity</button>
+        <button className="btn btn-secondary" style={{ marginBottom: 0 }} onClick={handleExportGrid}><Download size={18} style={{marginRight: 4}} /> Grid Export</button>
       </div>
       <div>
         {sortedItems.map(a => (
@@ -304,7 +326,7 @@ function ActivitiesTab({ items, batchId, onAttend }) {
             </div>
             <div style={{ display: 'flex', gap: '0.5rem' }}>
               <button className="btn btn-secondary" onClick={() => onAttend(a.id)}><CheckCircle2 size={16} style={{marginRight:4}}/> Mark Attendance</button>
-              <button className="btn btn-danger" onClick={() => deleteActivity(a.id)}>Delete</button>
+              <button className="btn btn-danger" onClick={() => { if(confirm(`Delete activity "${a.name}" and all of its attendance data?`)) deleteActivity(a.id); }}>Delete</button>
             </div>
           </div>
         ))}
@@ -522,9 +544,22 @@ function StudentDetailView({ studentId, onBack }) {
 }
 
 function SettingsView({ onBack }) {
-  const { adminEmail, setAdminEmail, emailJsSettings, setEmailJsSettings, pendingUsers, approveUser, rejectUser, admins, currentUser, removeAdmin } = useStore();
+  const { adminEmail, setAdminEmail, emailJsSettings, setEmailJsSettings, pendingUsers, approveUser, rejectUser, admins, currentUser, removeAdmin, editAdmin } = useStore();
   const [emailInput, setEmailInput] = useState(adminEmail);
   const [eS, setES] = useState(emailJsSettings || { serviceId: '', templateId: '', publicKey: '' });
+  
+  const [editingAdmin, setEditingAdmin] = useState(null);
+  const [editAdminForm, setEditAdminForm] = useState({ username: '', email: '', password: '' });
+
+  const startEditAdmin = (admin) => {
+    setEditingAdmin(admin.id);
+    setEditAdminForm({ username: admin.username, email: admin.email || '', password: admin.password });
+  };
+
+  const saveEditAdmin = (id) => {
+    editAdmin(id, editAdminForm);
+    setEditingAdmin(null);
+  };
 
   return (
     <div>
@@ -582,19 +617,37 @@ function SettingsView({ onBack }) {
 
       <div className="glass-card">
         <h3 style={{ marginBottom: '1rem' }}>Approved Administrators ({admins.length})</h3>
+        <p style={{ color: 'var(--text-muted)', marginBottom: '1rem', fontSize: '0.85rem' }}>Edit existing administrator details, including your own profile and password settings.</p>
         {admins.map(admin => (
-          <div key={admin.id} className="list-item" style={{ cursor: 'default' }}>
-            <div>
-              <strong style={{ color: 'var(--text-main)' }}>{admin.username}</strong>
-              <div style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>{admin.email || 'No email provided'}</div>
-            </div>
-            {admin.id !== 1 && admin.id !== currentUser?.id && (
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <button className="btn btn-danger" onClick={() => { if(confirm('Are you sure you want to remove this admin?')) removeAdmin(admin.id); }}>Remove</button>
-              </div>
+          <div key={admin.id} className="list-item" style={{ cursor: 'default', display: 'flex', flexDirection: 'column', gap: '0.5rem', alignItems: 'stretch' }}>
+            {editingAdmin === admin.id ? (
+               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '1rem', background: 'var(--surface)', borderRadius: 'var(--radius-md)' }}>
+                 <p style={{ fontSize: '0.85rem', color: 'var(--primary)', marginBottom: '0.25rem', fontWeight: 'bold' }}>Edit Admin Record</p>
+                 <input className="input-field" style={{marginBottom:0}} value={editAdminForm.username} onChange={e=>setEditAdminForm({...editAdminForm, username: e.target.value})} placeholder="Username" />
+                 <input className="input-field" style={{marginBottom:0}} value={editAdminForm.email} onChange={e=>setEditAdminForm({...editAdminForm, email: e.target.value})} placeholder="Email" type="email" />
+                 <input className="input-field" style={{marginBottom:0}} value={editAdminForm.password} onChange={e=>setEditAdminForm({...editAdminForm, password: e.target.value})} placeholder="Password" type="password" />
+                 <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                   <button className="btn btn-primary" onClick={() => saveEditAdmin(admin.id)}>Save Changes</button>
+                   <button className="btn btn-secondary" onClick={() => setEditingAdmin(null)}>Cancel</button>
+                 </div>
+               </div>
+            ) : (
+               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', flexWrap: 'wrap', gap: '1rem' }}>
+                 <div style={{ flex: 1 }}>
+                    <strong style={{ color: 'var(--text-main)' }}>{admin.username}</strong>
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>{admin.email || 'No email provided'}</div>
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.15rem' }}>Password: {admin.id === currentUser?.id ? '••••••••' : '(Hidden)'}</div>
+                 </div>
+                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                   <button className="btn btn-secondary" onClick={() => startEditAdmin(admin)}>Edit Profile</button>
+                   {admin.id !== 1 && admin.id !== currentUser?.id && (
+                     <button className="btn btn-danger" onClick={() => { if(confirm('Are you sure you want to remove this admin?')) removeAdmin(admin.id); }}>Remove</button>
+                   )}
+                   {admin.id === 1 && <span style={{ color: 'var(--primary)', fontWeight: 'bold', fontSize: '0.875rem', marginLeft: '0.5rem' }}>Main Admin</span>}
+                   {admin.id === currentUser?.id && admin.id !== 1 && <span style={{ color: 'var(--primary)', fontWeight: 'bold', fontSize: '0.875rem', marginLeft: '0.5rem' }}>You</span>}
+                 </div>
+               </div>
             )}
-            {admin.id === 1 && <span style={{ color: 'var(--primary)', fontWeight: 'bold', fontSize: '0.875rem' }}>Main Admin</span>}
-            {admin.id === currentUser?.id && admin.id !== 1 && <span style={{ color: 'var(--primary)', fontWeight: 'bold', fontSize: '0.875rem' }}>You</span>}
           </div>
         ))}
       </div>
