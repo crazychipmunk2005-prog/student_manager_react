@@ -1,6 +1,19 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { persist, createJSONStorage } from 'zustand/middleware'
+import { get, set, del } from 'idb-keyval'
 
+// IndexedDB Storage setup
+const storage = {
+  getItem: async (name) => {
+    return (await get(name)) || null
+  },
+  setItem: async (name, value) => {
+    await set(name, value)
+  },
+  removeItem: async (name) => {
+    await del(name)
+  },
+}
 export const useStore = create(
   persist(
     (set, get) => ({
@@ -45,6 +58,14 @@ export const useStore = create(
       rejectUser: (id) => {
         const { pendingUsers } = get();
         set({ pendingUsers: pendingUsers.filter(u => u.id !== id) });
+      },
+
+      removeAdmin: (id) => {
+        const { admins, currentUser } = get();
+        // Prevent removing the main admin (id: 1) or oneself
+        if (id === 1 || id === currentUser?.id) return false;
+        set({ admins: admins.filter(a => a.id !== id) });
+        return true;
       },
 
       registerFirstAdmin: (username, email, password) => {
@@ -105,7 +126,8 @@ export const useStore = create(
       }),
     }),
     {
-      name: 'student-manager-storage',
+      name: 'student-manager-database',
+      storage: createJSONStorage(() => storage),
     }
   )
 )

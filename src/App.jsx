@@ -522,7 +522,7 @@ function StudentDetailView({ studentId, onBack }) {
 }
 
 function SettingsView({ onBack }) {
-  const { adminEmail, setAdminEmail, emailJsSettings, setEmailJsSettings, pendingUsers, approveUser, rejectUser } = useStore();
+  const { adminEmail, setAdminEmail, emailJsSettings, setEmailJsSettings, pendingUsers, approveUser, rejectUser, admins, currentUser, removeAdmin } = useStore();
   const [emailInput, setEmailInput] = useState(adminEmail);
   const [eS, setES] = useState(emailJsSettings || { serviceId: '', templateId: '', publicKey: '' });
 
@@ -563,7 +563,7 @@ function SettingsView({ onBack }) {
         </div>
       </div>
 
-      <div className="glass-card">
+      <div className="glass-card" style={{ marginBottom: '2rem' }}>
         <h3 style={{ marginBottom: '1rem' }}>Pending Registrations ({pendingUsers.length})</h3>
         {pendingUsers.length === 0 && <p style={{ color: 'var(--text-muted)' }}>There are no pending account requests.</p>}
         {pendingUsers.map(user => (
@@ -576,6 +576,25 @@ function SettingsView({ onBack }) {
               <button className="btn btn-primary" onClick={() => approveUser(user.id)}>Approve</button>
               <button className="btn btn-danger" onClick={() => rejectUser(user.id)}><Trash2 size={16}/></button>
             </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="glass-card">
+        <h3 style={{ marginBottom: '1rem' }}>Approved Administrators ({admins.length})</h3>
+        {admins.map(admin => (
+          <div key={admin.id} className="list-item" style={{ cursor: 'default' }}>
+            <div>
+              <strong style={{ color: 'var(--text-main)' }}>{admin.username}</strong>
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>{admin.email || 'No email provided'}</div>
+            </div>
+            {admin.id !== 1 && admin.id !== currentUser?.id && (
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button className="btn btn-danger" onClick={() => { if(confirm('Are you sure you want to remove this admin?')) removeAdmin(admin.id); }}>Remove</button>
+              </div>
+            )}
+            {admin.id === 1 && <span style={{ color: 'var(--primary)', fontWeight: 'bold', fontSize: '0.875rem' }}>Main Admin</span>}
+            {admin.id === currentUser?.id && admin.id !== 1 && <span style={{ color: 'var(--primary)', fontWeight: 'bold', fontSize: '0.875rem' }}>You</span>}
           </div>
         ))}
       </div>
