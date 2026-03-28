@@ -62,6 +62,7 @@ export const useStore = create(
           }
         } catch (e) {
           console.error('Failed to connect to Firebase DB', e);
+          alert('FIREBASE CLOUD FIREWALL ERROR (READ): ' + e.message + '\n\nYour app cannot pull data from the cloud! Check your Firestore Rules!');
           set({ isLoadedFromServer: true }); // block break failsafe
         }
       },
@@ -200,7 +201,8 @@ export const useStore = create(
 // Automatic sync to Firebase Firestore DB
 useStore.subscribe(async (state, prevState) => {
   // Only sync if data has actually been bootstrapped from server first
-  if (!state.isLoadedFromServer || !prevState.isLoadedFromServer) return;
+  if (!state.isLoadedFromServer) return;
+  if (!prevState.isLoadedFromServer && state.isLoadedFromServer) return; // Ignore the initial load tick
 
   const snapshot = {
     admins: state.admins,
@@ -217,5 +219,6 @@ useStore.subscribe(async (state, prevState) => {
     await setDoc(docRef, snapshot);
   } catch (error) {
     console.error('Failed to sync Firebase Database:', error);
+    alert('FIREBASE CLOUD FIREWALL ERROR: ' + error.message + '\n\nYour data is NOT saving securely to the Cloud because your Firestore Rules are still blocking writes. Please ensure they are set to "allow read, write: if true;" and published in your Firebase Console.');
   }
 });

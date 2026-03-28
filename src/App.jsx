@@ -294,6 +294,7 @@ function ActivitiesTab({ items, batchId, onAttend }) {
   const [type, setType] = useState('Orientation');
   const [hours, setHours] = useState('1');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [exportFilter, setExportFilter] = useState('ALL');
 
   // Reverse list placing newest created activities on top
   const sortedItems = [...items].sort((a, b) => b.id - a.id);
@@ -301,7 +302,7 @@ function ActivitiesTab({ items, batchId, onAttend }) {
   const handleExportGrid = () => {
     const batch = batches.find(b => b.id === batchId);
     const batchStudents = students.filter(s => s.batchId === batchId);
-    exportActivitiesGrid(batch, batchStudents, items, attendance);
+    exportActivitiesGrid(batch, batchStudents, items, attendance, exportFilter);
   };
 
   return (
@@ -316,7 +317,17 @@ function ActivitiesTab({ items, batchId, onAttend }) {
         <input className="input-field" type="number" placeholder="Hours" value={hours} onChange={e=>setHours(e.target.value)} style={{ width: 80, marginBottom: 0 }} />
         <input className="input-field" type="date" value={date} onChange={e=>setDate(e.target.value)} style={{ width: 140, marginBottom: 0 }} />
         <button className="btn btn-primary" style={{ marginBottom: 0 }} onClick={() => { if(name) { addActivity({batchId, name, type, hours, date}); setName(''); }}}>Add Activity</button>
-        <button className="btn btn-secondary" style={{ marginBottom: 0 }} onClick={handleExportGrid}><Download size={18} style={{marginRight: 4}} /> Grid Export</button>
+        
+        <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center', background: 'var(--surface)', padding: '0.25rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
+          <select className="input-field" style={{ margin: 0, padding: '0.25rem 0.5rem', border: 'none', background: 'transparent', outline: 'none', cursor: 'pointer', maxWidth: '140px', fontSize: '0.85rem' }} value={exportFilter} onChange={e=>setExportFilter(e.target.value)}>
+            <option value="ALL">Export All</option>
+            <option value="Orientation">Orientation</option>
+            <option value="Campus">Campus</option>
+            <option value="Community">Community</option>
+          </select>
+          <div style={{ width: '1px', height: '24px', background: 'var(--border)' }}></div>
+          <button className="btn btn-secondary" style={{ marginBottom: 0, border: 'none', padding: '0.25rem 0.75rem' }} onClick={handleExportGrid}><Download size={16} style={{marginRight: 4}} /> Dump</button>
+        </div>
       </div>
       <div>
         {sortedItems.map(a => (

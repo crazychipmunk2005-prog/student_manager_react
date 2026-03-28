@@ -68,9 +68,13 @@ export const exportActivityAttendance = (activity, students, checksDict) => {
   XLSX.writeFile(wb, `Attendance_${safeName}_${activity.date}.xlsx`);
 };
 
-export const exportActivitiesGrid = (batch, students, activities, attendance) => {
+export const exportActivitiesGrid = (batch, students, activities, attendance, filterType = 'ALL') => {
   const wsData = [];
-  const validTypes = ['COMMUNITY', 'CAMPUS', 'ORIENTATION'];
+  let validTypes = ['COMMUNITY', 'CAMPUS', 'ORIENTATION'];
+
+  if (filterType !== 'ALL') {
+    validTypes = [filterType.toUpperCase()];
+  }
 
   validTypes.forEach(type => {
     const typeActs = activities.filter(a => a.type.toUpperCase() === type.toUpperCase()).sort((a,b) => new Date(a.date) - new Date(b.date));
@@ -108,6 +112,7 @@ export const exportActivitiesGrid = (batch, students, activities, attendance) =>
 
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet(wsData);
+  const suffix = filterType === 'ALL' ? '' : `_${filterType}`;
   XLSX.utils.book_append_sheet(wb, ws, "Activities Grid Component");
-  XLSX.writeFile(wb, `Activities_Grid_${batch.name.replace(/\s+/g, '_')}.xlsx`);
+  XLSX.writeFile(wb, `Activities_Grid${suffix}_${batch.name.replace(/\s+/g, '_')}.xlsx`);
 };
