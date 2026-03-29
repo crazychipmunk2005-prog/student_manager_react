@@ -68,7 +68,7 @@ export const exportActivityAttendance = (activity, students, checksDict) => {
   XLSX.writeFile(wb, `Attendance_${safeName}_${activity.date}.xlsx`);
 };
 
-export const exportActivitiesGrid = (batch, students, activities, attendance, filterType = 'ALL') => {
+export const exportActivitiesGrid = (batch, students, activities, attendance, filterType = 'ALL', filterMonth = 'ALL') => {
   const wsData = [];
   let validTypes = ['COMMUNITY', 'CAMPUS', 'ORIENTATION'];
 
@@ -77,7 +77,17 @@ export const exportActivitiesGrid = (batch, students, activities, attendance, fi
   }
 
   validTypes.forEach(type => {
-    const typeActs = activities.filter(a => a.type.toUpperCase() === type.toUpperCase()).sort((a,b) => new Date(a.date) - new Date(b.date));
+    let typeActs = activities.filter(a => a.type.toUpperCase() === type.toUpperCase()).sort((a,b) => new Date(a.date) - new Date(b.date));
+    
+    // Filter by month if specified
+    if (filterMonth !== 'ALL') {
+      typeActs = typeActs.filter(a => {
+        const mName = new Date(a.date).toLocaleString('default', { month: 'long', year: 'numeric' });
+        return mName === filterMonth;
+      });
+    }
+
+    if (typeActs.length === 0) return; // Skip if no activities after filtering
     
     wsData.push([type]);
     
@@ -111,8 +121,13 @@ export const exportActivitiesGrid = (batch, students, activities, attendance, fi
   });
 
   const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet(wsData);
-  const suffix = filterType === 'ALL' ? '' : `_${filterType}`;
-  XLSX.utils.book_append_sheet(wb, ws, "Activities Grid Component");
+  const ws = XLSX.utils.aoa_to_sheet(wsData.length ? wsData : [['No Data']]);
+  
+  let suffix = filterType === 'ALL' ? '' : `_${filterType}`;
+  if (filterMonth !== 'ALL') {
+    suffix += `_${filterMonth.replace(/\s+/g, '_')}`;
+  }
+  
+  XLSX.utils.book_append_sheet(wb, ws, "Activities Grid");
   XLSX.writeFile(wb, `Activities_Grid${suffix}_${batch.name.replace(/\s+/g, '_')}.xlsx`);
 };

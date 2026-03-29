@@ -1,17 +1,19 @@
 :root {
-  --bg-color: #0f172a;
-  --surface: #1e293b;
-  --surface-hover: #334155;
-  --primary: #3b82f6;
-  --primary-hover: #2563eb;
-  --text-main: #f8fafc;
-  --text-muted: #94a3b8;
-  --danger: #ef4444;
-  --success: #10b981;
-  --border: #334155;
-  --radius-lg: 16px;
-  --radius-md: 12px;
-  --radius-sm: 8px;
+  --bg-color: #0B1120;
+  --surface: #111827;
+  --surface-hover: #1F2937;
+  --primary: #3B82F6;
+  --primary-hover: #60A5FA;
+  --btn-red: #C8102E;
+  --btn-red-hover: #A00B23;
+  --text-main: #F9FAFB;
+  --text-muted: #9CA3AF;
+  --danger: #EF4444;
+  --success: #10B981;
+  --border: rgba(255, 255, 255, 0.08);
+  --radius-lg: 1.25rem;
+  --radius-md: 0.875rem;
+  --radius-sm: 0.5rem;
 }
 
 * {
@@ -21,7 +23,7 @@
 }
 
 body {
-  font-family: 'Inter', sans-serif;
+  font-family: 'Inter', system-ui, sans-serif;
   background: var(--bg-color);
   color: var(--text-main);
   min-height: 100vh;
@@ -34,21 +36,19 @@ body {
   padding: 2rem;
 }
 
-/* Glassmorphism Card */
+/* Modern Clean Card replacing Glass-Card */
 .glass-card {
-  background: rgba(30, 41, 59, 0.7);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 2rem;
-  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
-  transition: transform 0.3s ease, box-shadow 0.3s ease;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4), 0 4px 10px rgba(0, 0, 0, 0.2);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .glass-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.5), 0 5px 15px rgba(0, 0, 0, 0.3);
 }
 
 /* Animations */
@@ -64,20 +64,21 @@ body {
 /* Inputs & Buttons */
 .input-field {
   width: 100%;
-  background: rgba(15, 23, 42, 0.6);
+  background: var(--surface-hover);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 0.75rem 1rem;
   color: var(--text-main);
-  font-size: 1rem;
+  font-size: 0.95rem;
   transition: all 0.2s;
   margin-bottom: 1rem;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 .input-field:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  box-shadow: 0 0 0 3px rgba(0, 58, 143, 0.4);
 }
 
 .btn {
@@ -85,9 +86,9 @@ body {
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  padding: 0.75rem 1.5rem;
+  padding: 0.65rem 1.25rem;
   border-radius: var(--radius-sm);
-  font-weight: 600;
+  font-weight: 500;
   cursor: pointer;
   transition: all 0.2s;
   border: none;
@@ -95,34 +96,38 @@ body {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--primary), #60a5fa);
-  color: white;
-  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+  background: linear-gradient(135deg, #003A8F, #002766);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(0, 58, 143, 0.25);
 }
 
 .btn-primary:hover {
-  filter: brightness(1.1);
+  background: linear-gradient(135deg, #0047B3, #001C4D);
   transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(59, 130, 246, 0.4);
+  box-shadow: 0 6px 16px rgba(0, 58, 143, 0.4);
 }
 
 .btn-secondary {
   background: var(--surface);
   color: var(--text-main);
   border: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.02);
 }
 
 .btn-secondary:hover {
   background: var(--surface-hover);
+  border-color: rgba(255, 255, 255, 0.15);
 }
 
 .btn-danger {
-  background: rgba(239, 68, 68, 0.1);
+  background: #fff;
   color: var(--danger);
+  border: 1px solid #FCA5A5;
 }
 .btn-danger:hover {
-  background: var(--danger);
-  color: white;
+  background: #FEF2F2;
+  color: #B91C1C;
+  border-color: #F87171;
 }
 
 /* Headers */
@@ -138,9 +143,7 @@ body {
 .title {
   font-size: 2rem;
   font-weight: 700;
-  background: linear-gradient(135deg, #fff, #94a3b8);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: var(--text-main);
 }
 
 /* Lists */
@@ -152,32 +155,33 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border: 1px solid transparent;
+  border: 1px solid var(--border);
   transition: all 0.2s;
   cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.02);
 }
 
 .list-item:hover {
-  border-color: var(--border);
+  border-color: rgba(255, 255, 255, 0.15);
   background: var(--surface-hover);
 }
 
 /* Tabs */
 .tabs {
   display: flex;
-  gap: 1rem;
+  gap: 1.5rem;
   margin-bottom: 1.5rem;
   border-bottom: 1px solid var(--border);
-  padding-bottom: 0.5rem;
+  padding-bottom: 0px;
 }
 .tab {
   background: none;
   border: none;
   color: var(--text-muted);
-  font-size: 1rem;
-  font-weight: 500;
+  font-size: 0.95rem;
+  font-weight: 600;
   cursor: pointer;
-  padding: 0.5rem 1rem;
+  padding: 0.75rem 0.5rem;
   position: relative;
   transition: color 0.2s;
 }
@@ -190,7 +194,7 @@ body {
 .tab.active::after {
   content: '';
   position: absolute;
-  bottom: -0.5rem;
+  bottom: -1px;
   left: 0;
   right: 0;
   height: 2px;
@@ -202,8 +206,8 @@ body {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.8);
-  backdrop-filter: blur(4px);
+  background: rgba(31, 41, 55, 0.5);
+  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -216,6 +220,7 @@ body {
   height: 1.25rem;
   accent-color: var(--primary);
   cursor: pointer;
+  border-radius: 4px;
 }
 
 /* Grid Stats */
@@ -233,15 +238,56 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 .stat-card .value {
-  font-size: 2.5rem;
+  font-size: 2.25rem;
   font-weight: 700;
   color: var(--primary);
+  line-height: 1;
 }
 .stat-card .label {
   color: var(--text-muted);
-  font-size: 0.875rem;
+  font-size: 0.85rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  font-weight: 600;
+}
+
+/* Responsive Mobile Fixes */
+@media (max-width: 768px) {
+  .app-container {
+    padding: 1rem;
+  }
+  .glass-card {
+    padding: 1rem;
+  }
+  .header, 
+  .list-item,
+  div[style*="justify-content: space-between"] {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 1rem !important;
+  }
+  .list-item > div {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    width: 100%;
+  }
+  .tabs {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .btn, .input-field, select {
+    width: 100% !important;
+    margin-bottom: 0.5rem !important;
+    max-width: 100% !important;
+  }
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+  div[style*="flex-wrap: wrap"] > div {
+    width: 100% !important;
+    height: auto !important;
+  }
 }

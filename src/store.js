@@ -159,6 +159,10 @@ export const useStore = create(
       attendance: state.attendance.filter(a => !activityIds.includes(a.activityId))
     };
   }),
+
+  updateBatch: (updated) => set((state) => ({
+    batches: state.batches.map(b => b.id === updated.id ? updated : b)
+  })),
   
   addStudent: (student) => set((state) => ({
     students: [...state.students, { ...student, id: Date.now() }]
@@ -177,6 +181,10 @@ export const useStore = create(
     activities: [...state.activities, { ...activity, id: Date.now() }]
   })),
   
+  updateActivity: (updated) => set((state) => ({
+    activities: state.activities.map(a => a.id === updated.id ? updated : a)
+  })),
+
   deleteActivity: (id) => set((state) => ({
     activities: state.activities.filter(a => a.id !== id),
     attendance: state.attendance.filter(a => a.activityId !== id)
@@ -185,6 +193,18 @@ export const useStore = create(
   saveAttendance: (activityId, records) => set((state) => {
     const otherLogs = state.attendance.filter(a => a.activityId !== activityId);
     return { attendance: [...otherLogs, ...records] };
+  }),
+
+  bulkImport: (newStudents, newActivities, newAttendance) => set((state) => {
+    // Overwrite attendance for the imported activities to prevent duplicates
+    const importedActIds = [...new Set(newAttendance.map(a => a.activityId))];
+    const untouchedAttendance = state.attendance.filter(a => !importedActIds.includes(a.activityId));
+    
+    return {
+      students: [...state.students, ...newStudents],
+      activities: [...state.activities, ...newActivities],
+      attendance: [...untouchedAttendance, ...newAttendance]
+    };
   }),
     }),
     {
