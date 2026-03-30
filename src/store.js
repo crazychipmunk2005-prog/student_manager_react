@@ -177,6 +177,11 @@ export const useStore = create(
 
           const { password: _pw, ...safeUser } = admin;
           set({ currentUser: safeUser, sessionExpiry: Date.now() + 8 * 3600 * 1000 });
+
+          // Fire sign-in alert to admin email (fire-and-forget)
+          const { webhookUrl } = get();
+          callWebhook(webhookUrl, { type: 'sign_in_alert', username: admin.username, email: admin.email || '' });
+
           return true;
         } catch (e) { console.error(e); return false; }
       },

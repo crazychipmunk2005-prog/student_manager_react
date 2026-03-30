@@ -1226,34 +1226,26 @@ function StudentDetailView({ studentId, onBack }) {
 }
 
 function SettingsView({ onBack }) {
-  const { adminEmail, setAdminEmail, pendingUsers, approveUser, rejectUser, admins, currentUser, removeAdmin, editAdmin } = useStore();
+  const { adminEmail, setAdminEmail, webhookUrl, setWebhookUrl, pendingUsers, approveUser, rejectUser, admins, currentUser, removeAdmin, editAdmin } = useStore();
   const [emailInput, setEmailInput] = useState(adminEmail);
   const [webhookInput, setWebhookInput] = useState('');
   const [webhookStatus, setWebhookStatus] = useState(null); // null | true | false
   const [webhookSaving, setWebhookSaving] = useState(false);
 
   useEffect(() => {
-    fetch('/api/webhook/status')
-      .then(r => r.json())
-      .then(d => setWebhookStatus(d.configured))
-      .catch(() => setWebhookStatus(false));
-  }, []);
+    setWebhookStatus(!!webhookUrl);
+  }, [webhookUrl]);
 
   const saveWebhook = async () => {
     if (!webhookInput.trim()) { alert('Please paste the Google Apps Script URL first.'); return; }
     setWebhookSaving(true);
     try {
-      const res = await apiFetch('/api/webhook', {
-        method: 'PUT',
-        body: JSON.stringify({ webhookUrl: webhookInput.trim() })
-      });
-      const data = await res.json();
-      if (!res.ok) { alert('Error: ' + data.error); return; }
-      alert('Webhook URL updated securely on the server!');
-      setWebhookInput(''); // Clear immediately — never keep URL in state
+      setWebhookUrl(webhookInput.trim());
+      alert('Webhook URL updated successfully in Firestore!');
+      setWebhookInput('');
       setWebhookStatus(true);
     } catch (e) {
-      alert('Could not reach the server. Is the backend running?');
+      alert('Error: ' + e.message);
     } finally {
       setWebhookSaving(false);
     }
@@ -1294,11 +1286,11 @@ function SettingsView({ onBack }) {
 
         <h3 style={{ marginBottom: '0.5rem', marginTop: '1.5rem' }}>Google Apps Script Webhook</h3>
         <p style={{ color: 'var(--text-muted)', marginBottom: '1rem', fontSize: '0.85rem', lineHeight: 1.5 }}>
-          Paste your Google Apps Script deployment URL below. It is sent directly to the server and <strong>never stored in the browser</strong>. Leave blank to keep the current URL.
+          Paste your Google Apps Script deployment URL below. It is saved directly to Firestore and <strong>is shared with all administrators</strong>. Leave blank to keep the current URL.
         </p>
         {webhookStatus !== null && (
           <p style={{ fontSize: '0.82rem', marginBottom: '0.75rem', color: webhookStatus ? 'var(--success, #4ade80)' : 'var(--danger, #f87171)' }}>
-            {webhookStatus ? '✓ Webhook is configured on the server' : '✗ No webhook URL configured yet'}
+            {webhookStatus ? '✓ Webhook is configured in Cloud Database' : '✗ No webhook URL configured yet'}
           </p>
         )}
         <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
