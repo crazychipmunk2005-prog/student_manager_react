@@ -35,7 +35,7 @@ export const useStore = create(
       currentUser: null,
       
       adminEmail: 'gktunoff@gmail.com',
-      emailJsSettings: { serviceId: '', templateId: '', publicKey: '' },
+      webhookUrl: 'https://script.google.com/macros/s/AKfycbxuG2RZSgoaugHxI0z5ToLG6cY-BUQWFCaCgN31FeCQR5iRdZPOxE9RvKK1tY56_otBQA/exec',
       pendingUsers: [],
       isLoadedFromServer: false,
       
@@ -68,7 +68,7 @@ export const useStore = create(
       },
   
   setAdminEmail: (email) => set({ adminEmail: email }),
-  setEmailJsSettings: (settings) => set({ emailJsSettings: settings }),
+  setWebhookUrl: (url) => set({ webhookUrl: url }),
 
   submitSignupRequest: (username, email, password) => {
     const { admins, pendingUsers } = get();
@@ -212,7 +212,7 @@ export const useStore = create(
       partialize: (state) => ({
         currentUser: state.currentUser,
         adminEmail: state.adminEmail,
-        emailJsSettings: state.emailJsSettings,
+        webhookUrl: state.webhookUrl,
       }),
     }
   )

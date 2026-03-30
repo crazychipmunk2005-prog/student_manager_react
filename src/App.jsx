@@ -19,9 +19,10 @@ export default function App() {
 
   if (!isLoadedFromServer) {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column' }}>
-        <h2 style={{color: 'var(--primary)'}}>Connecting to NoSQL Database...</h2>
-        <p style={{color: 'var(--text-muted)'}}>Synchronizing Collections</p>
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', background: 'var(--background)' }} className="animate-fade-in">
+        <img src="/nss-logo.jpg" alt="NSS Logo" style={{ width: '180px', height: '180px', objectFit: 'contain', borderRadius: '100%', marginBottom: '2rem' }} />
+        <h2 style={{ color: 'var(--primary)', letterSpacing: '2px', marginBottom: '0.5rem', textAlign: 'center', fontSize: '1.8rem' }}>NSS UNITS 128 & 198</h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '1px' }}>System Initializing...</p>
       </div>
     );
   }
@@ -104,39 +105,18 @@ function LoginView() {
   const submitSignup = async (e) => {
     e.preventDefault();
     if (submitSignupRequest(u, email, p)) {
-      const { emailJsSettings } = useStore.getState();
-      
-      if (emailJsSettings.serviceId && emailJsSettings.templateId && emailJsSettings.publicKey) {
-        try {
-          const res = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              service_id: emailJsSettings.serviceId,
-              template_id: emailJsSettings.templateId,
-              user_id: emailJsSettings.publicKey,
-              template_params: {
-                admin_email: adminEmail,
-                req_username: u,
-                req_email: email,
-              }
-            })
-          });
-
-          if (res.ok) {
-            alert('Registration request sent! An email has been successfully sent to the administrator for approval.');
-          } else {
-            console.error('EmailJS Error:', await res.text());
-            alert('Request logged locally, but email failed to send. The administrator can still approve you via the settings panel.');
-          }
-        } catch (error) {
-          console.error('EmailJS Error:', error);
-          alert('Request logged locally, but email failed to send. The administrator can still approve you via the settings panel.');
-        }
-      } else {
-        alert(`SIMULATED SYSTEM EMAIL SENT TO:\n${adminEmail}\n\n"User ${u} (${email}) has requested admin access."\n\nYour request is pending until approved by the administrator.\n\n(Note: Configure your EmailJS keys in Admin Settings to send absolute emails)`);
+      try {
+        const { webhookUrl, adminEmail } = useStore.getState();
+        // Ping our secure Google Apps Script without exposing any app passwords
+        await fetch(webhookUrl, {
+          method: 'POST',
+          body: JSON.stringify({ username: u, email: email, adminEmail: adminEmail })
+        });
+      } catch (err) {
+        console.error('Webhook error:', err);
       }
       
+      alert('Registration request recorded securely! The administrator will be notified via our secure Google Services system.');
       setView('LOGIN');
       setU(''); setEmail(''); setP('');
     } else {
@@ -1049,9 +1029,9 @@ function StudentDetailView({ studentId, onBack }) {
 }
 
 function SettingsView({ onBack }) {
-  const { adminEmail, setAdminEmail, emailJsSettings, setEmailJsSettings, pendingUsers, approveUser, rejectUser, admins, currentUser, removeAdmin, editAdmin } = useStore();
+  const { adminEmail, setAdminEmail, webhookUrl, setWebhookUrl, pendingUsers, approveUser, rejectUser, admins, currentUser, removeAdmin, editAdmin } = useStore();
   const [emailInput, setEmailInput] = useState(adminEmail);
-  const [eS, setES] = useState(emailJsSettings || { serviceId: '', templateId: '', publicKey: '' });
+  const [webhookInput, setWebhookInput] = useState(webhookUrl);
   
   const [editingAdmin, setEditingAdmin] = useState(null);
   const [editAdminForm, setEditAdminForm] = useState({ username: '', email: '', password: '' });
@@ -1074,32 +1054,21 @@ function SettingsView({ onBack }) {
       </div>
 
       <div className="glass-card" style={{ marginBottom: '2rem' }}>
-        <h3 style={{ marginBottom: '1rem' }}>EmailJS Notification Configuration</h3>
+        <h3 style={{ marginBottom: '1rem' }}>Admin Delivery Email</h3>
         <p style={{ color: 'var(--text-muted)', marginBottom: '1rem', lineHeight: 1.5 }}>
-          Input your free EmailJS credentials below to securely dispatch live emails from your browser whenever anyone requests an admin account. Set it up at <strong>emailjs.com</strong>.
+          This is the primary email address that will receive secure live notifications from the Webhook whenever anyone requests an admin account.
         </p>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
-           <div>
-             <label style={{display: 'block', fontSize: '0.85rem', marginBottom: '0.5rem', color: 'var(--text-muted)'}}>Service ID</label>
-             <input className="input-field" style={{ marginBottom: 0 }} placeholder="service_xxxxxxxx" value={eS.serviceId} onChange={e=>setES({...eS, serviceId: e.target.value})} />
-           </div>
-           <div>
-             <label style={{display: 'block', fontSize: '0.85rem', marginBottom: '0.5rem', color: 'var(--text-muted)'}}>Template ID</label>
-             <input className="input-field" style={{ marginBottom: 0 }} placeholder="template_xxxxxxxx" value={eS.templateId} onChange={e=>setES({...eS, templateId: e.target.value})} />
-           </div>
-           <div>
-             <label style={{display: 'block', fontSize: '0.85rem', marginBottom: '0.5rem', color: 'var(--text-muted)'}}>Public Key</label>
-             <input className="input-field" style={{ marginBottom: 0 }} placeholder="xxxxxxxxxxxxxxxx" value={eS.publicKey} onChange={e=>setES({...eS, publicKey: e.target.value})} />
-           </div>
-        </div>
-        
-        <h3 style={{ marginBottom: '1rem', marginTop: '2rem' }}>Admin Delivery Email</h3>
-        <p style={{ color: 'var(--text-muted)', marginBottom: '1rem' }}>
-          This is the primary email address that receives the live requests mentioned above.
-        </p>
-        <div style={{ display: 'flex', gap: '1rem' }}>
+        <div style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem' }}>
           <input className="input-field" style={{ maxWidth: 300, marginBottom: 0 }} type="email" value={emailInput} onChange={e=>setEmailInput(e.target.value)} />
-          <button className="btn btn-primary" onClick={() => { setAdminEmail(emailInput); setEmailJsSettings(eS); alert('Configuration strictly securely saved!'); }}>Save Configuration</button>
+        </div>
+
+        <h3 style={{ marginBottom: '1rem' }}>Google Apps Script Webhook URL</h3>
+        <p style={{ color: 'var(--text-muted)', marginBottom: '1rem', lineHeight: 1.5 }}>
+          The secure script URL that triggers email delivery. Update this if you deploy your own Google Script to transfer ownership.
+        </p>
+        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+          <input className="input-field" style={{ flex: 1, minWidth: '250px', marginBottom: 0 }} type="text" value={webhookInput} onChange={e=>setWebhookInput(e.target.value)} />
+          <button className="btn btn-primary" onClick={() => { setAdminEmail(emailInput); setWebhookUrl(webhookInput); alert('Configuration saved securely!'); }}>Save Settings</button>
         </div>
       </div>
 
