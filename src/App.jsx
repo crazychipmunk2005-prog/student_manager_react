@@ -1,21 +1,71 @@
 import { useState, useEffect } from 'react';
 import { useStore } from './store';
-import { exportToExcel, exportActivityAttendance, exportActivitiesGrid } from './utils';
+import { exportToExcel, exportActivityAttendance, exportActivitiesGrid, checkRateLimit } from './utils';
 import * as XLSX from 'xlsx';
 import { Download, LogOut, Users, BookOpen, BarChart3, ChevronLeft, Plus, Trash2, CheckCircle2, Settings } from 'lucide-react';
 
+// ─── CSRF Token Bootstrap ─────────────────────────────────────────────────────
+// Fetched once on app load; attached to every /api/ request automatically.
+let _csrfToken = '';
+
+// Base URL for all /api/ calls.
+// Dev:  '' (empty → Vite proxy → localhost:5000)
+// Prod: set VITE_API_BASE=https://your-backend.onrender.com in .env
+const API_BASE = import.meta.env.VITE_API_BASE || '';
+
+fetch(`${API_BASE}/api/csrf-token`)
+  .then(r => r.json())
+  .then(d => { _csrfToken = d.token; })
+  .catch(() => {});
+
+export async function apiFetch(url, options = {}) {
+  return fetch(`${API_BASE}${url}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': _csrfToken,
+      ...(options.headers || {}),
+    },
+  });
+}
+
 export default function App() {
   const { currentUser, logout, isLoadedFromServer, loadFromServer } = useStore();
-  const [currentView, setCurrentView] = useState('DASHBOARD'); // DASHBOARD | BATCH_DETAIL | ATTENDANCE | STUDENT_DETAIL | SETTINGS
+  const sessionExpiry = useStore(s => s.sessionExpiry);
+  const sessionToken  = useStore(s => s.sessionToken);
+  const [currentView, setCurrentView] = useState('DASHBOARD');
   const [activeBatchId, setActiveBatchId] = useState(null);
   const [activeActivityId, setActiveActivityId] = useState(null);
   const [activeStudentId, setActiveStudentId] = useState(null);
 
+  // Load data from Firestore on mount
   useEffect(() => {
-    if (!isLoadedFromServer) {
-      loadFromServer();
-    }
+    if (!isLoadedFromServer) loadFromServer();
   }, [isLoadedFromServer, loadFromServer]);
+
+  // Session expiry guard — check client-side timestamp every minute
+  // and re-validate against the server every 5 minutes
+  useEffect(() => {
+    if (!currentUser) return;
+    const checkSession = async () => {
+      // Client-side expiry check
+      if (sessionExpiry && Date.now() > sessionExpiry) {
+        await logout();
+        return;
+      }
+      // Server-side session re-validation every 5 min
+      if (sessionToken) {
+        try {
+          const r = await fetch('/api/auth/check', { headers: { 'x-session-token': sessionToken } });
+          const d = await r.json();
+          if (!d.valid) await logout();
+        } catch { /* server unreachable — trust client expiry */ }
+      }
+    };
+    checkSession(); // immediate check on mount
+    const id = setInterval(checkSession, 5 * 60 * 1000); // every 5 minutes
+    return () => clearInterval(id);
+  }, [currentUser, sessionExpiry, sessionToken, logout]);
 
   if (!isLoadedFromServer) {
     return (
@@ -29,8 +79,8 @@ export default function App() {
 
   if (!currentUser) return <LoginView />;
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     setCurrentView('DASHBOARD');
   };
 
@@ -92,28 +142,44 @@ function LoginView() {
   const [u, setU] = useState('');
   const [email, setEmail] = useState('');
   const [p, setP] = useState('');
+  const [showForgot, setShowForgot] = useState(false);
 
-  const submitLogin = (e) => {
+  if (showForgot) return <ForgotPasswordView onBack={() => setShowForgot(false)} />;
+
+  const submitLogin = async (e) => {
     e.preventDefault();
+    const limit = checkRateLimit('login', 5, 15 * 60 * 1000);
+    if (!limit.allowed) {
+      alert(`Too many login attempts! Please try again in ${limit.remainingStr}.`);
+      return;
+    }
+
     if (view === 'SETUP') {
-      if(!registerFirstAdmin(u, email, p)) alert('Admin exists');
+      if(!(await registerFirstAdmin(u, email, p))) alert('Admin exists');
     } else {
-      if(!login(u, p)) alert('Invalid credentials or account pending approval');
+      if(!(await login(u, p))) alert('Invalid credentials or account pending approval');
     }
   };
 
   const submitSignup = async (e) => {
     e.preventDefault();
+
+    const limit = checkRateLimit('signup', 3, 60 * 60 * 1000); // 3 attempts per hour
+    if (!limit.allowed) {
+      alert(`Too many account requests! Please try again in ${limit.remainingStr}.`);
+      return;
+    }
+
     if (submitSignupRequest(u, email, p)) {
       try {
-        const { webhookUrl, adminEmail } = useStore.getState();
-        // Ping our secure Google Apps Script without exposing any app passwords
-        await fetch(webhookUrl, {
+        const { adminEmail } = useStore.getState();
+        // Route through backend proxy — webhook URL stays server-side only
+        await apiFetch('/api/notify', {
           method: 'POST',
           body: JSON.stringify({ username: u, email: email, adminEmail: adminEmail })
         });
       } catch (err) {
-        console.error('Webhook error:', err);
+        console.error('Notification error:', err);
       }
       
       alert('Registration request recorded securely! The administrator will be notified via our secure Google Services system.');
@@ -136,9 +202,14 @@ function LoginView() {
           <input className="input-field" type="password" placeholder="Password" value={p} onChange={e=>setP(e.target.value)} required />
           <button type="submit" className="btn btn-primary" style={{ width: '100%', marginBottom: '1rem' }}>{view === 'SETUP' ? 'Create Admin' : 'Login'}</button>
           {view === 'LOGIN' && (
-            <p style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
-              Don't have an account? <span style={{ color: 'var(--primary)', cursor: 'pointer' }} onClick={() => { setView('SIGNUP'); setU(''); setEmail(''); setP(''); }}>Sign up</span>
-            </p>
+            <>
+              <p style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
+                Don't have an account? <span style={{ color: 'var(--primary)', cursor: 'pointer' }} onClick={() => { setView('SIGNUP'); setU(''); setEmail(''); setP(''); }}>Sign up</span>
+              </p>
+              <p style={{ textAlign: 'center', marginTop: '0.5rem' }}>
+                <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem', cursor: 'pointer' }} onClick={() => setShowForgot(true)}>Forgot password?</span>
+              </p>
+            </>
           )}
         </form>
       )}
@@ -159,7 +230,154 @@ function LoginView() {
   );
 }
 
+function ForgotPasswordView({ onBack }) {
+  const { applyPasswordReset } = useStore();
+  const [step, setStep]           = useState('EMAIL');   // EMAIL | OTP | PASSWORD | SUCCESS
+  const [emailVal, setEmailVal]   = useState('');
+  const [otp, setOtp]             = useState(['','','','','','']);
+  const [resetToken, setResetToken] = useState('');
+  const [newPw, setNewPw]         = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  const [loading, setLoading]     = useState(false);
+  const [error, setError]         = useState('');
+  const otpRefs = Array.from({ length: 6 }, () => ({ current: null }));
+
+  const cardStyle = { width: 420, padding: '2.5rem' };
+  const errorStyle = { color: 'var(--danger, #f87171)', fontSize: '0.85rem', marginBottom: '1rem', textAlign: 'center' };
+  const muteStyle  = { color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', marginBottom: '1.5rem', lineHeight: 1.5 };
+
+  // Step 1 — request OTP
+  const requestOtp = async (e) => {
+    e.preventDefault();
+    setError('');
+    if (!emailVal.trim()) { setError('Please enter your email address.'); return; }
+    setLoading(true);
+    try {
+      const res  = await apiFetch('/api/forgot-password', { method: 'POST', body: JSON.stringify({ email: emailVal.trim() }) });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error || 'Request failed.'); return; }
+      setStep('OTP');
+    } catch { setError('Could not reach the server.'); }
+    finally   { setLoading(false); }
+  };
+
+  // Step 2 — verify OTP
+  const verifyOtp = async (e) => {
+    e.preventDefault();
+    setError('');
+    const code = otp.join('');
+    if (code.length < 6) { setError('Please enter the full 6-digit code.'); return; }
+    setLoading(true);
+    try {
+      const res  = await apiFetch('/api/verify-otp', { method: 'POST', body: JSON.stringify({ email: emailVal.trim(), otp: code }) });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error || 'Invalid code.'); return; }
+      setResetToken(data.resetToken);
+      setStep('PASSWORD');
+    } catch { setError('Could not reach the server.'); }
+    finally   { setLoading(false); }
+  };
+
+  // Step 3 — set new password
+  const resetPassword = async (e) => {
+    e.preventDefault();
+    setError('');
+    if (newPw.length < 6)       { setError('Password must be at least 6 characters.'); return; }
+    if (newPw !== confirmPw)    { setError('Passwords do not match.'); return; }
+    setLoading(true);
+    try {
+      const res  = await apiFetch('/api/reset-password', { method: 'POST', body: JSON.stringify({ resetToken, newPassword: newPw }) });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error || 'Reset failed.'); return; }
+      // Apply the server-hashed password to the Zustand store → auto-syncs to Firestore
+      applyPasswordReset(data.email, data.hashedPassword);
+      setStep('SUCCESS');
+    } catch { setError('Could not reach the server.'); }
+    finally   { setLoading(false); }
+  };
+
+  // OTP digit input handler
+  const handleOtpChange = (idx, val) => {
+    const digit = val.replace(/\D/, '').slice(-1);
+    const next  = [...otp];
+    next[idx]   = digit;
+    setOtp(next);
+    if (digit && idx < 5) otpRefs[idx + 1].current?.focus();
+  };
+  const handleOtpKey = (idx, e) => {
+    if (e.key === 'Backspace' && !otp[idx] && idx > 0) otpRefs[idx - 1].current?.focus();
+  };
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {step === 'EMAIL' && (
+        <form onSubmit={requestOtp} className="glass-card animate-fade-in" style={cardStyle}>
+          <h2 style={{ marginBottom: '0.5rem', textAlign: 'center' }}>Reset Password</h2>
+          <p style={muteStyle}>Enter the email address linked to your admin account. A one-time code will be sent to that address.</p>
+          {error && <p style={errorStyle}>{error}</p>}
+          <input className="input-field" type="email" placeholder="Your admin email address" value={emailVal} onChange={e => setEmailVal(e.target.value)} required autoFocus />
+          <button type="submit" className="btn btn-primary" style={{ width: '100%', marginBottom: '1rem' }} disabled={loading}>{loading ? 'Sending…' : 'Send OTP'}</button>
+          <p style={{ textAlign: 'center' }}><span style={{ color: 'var(--text-muted)', fontSize: '0.85rem', cursor: 'pointer' }} onClick={onBack}>← Back to Login</span></p>
+        </form>
+      )}
+
+      {step === 'OTP' && (
+        <form onSubmit={verifyOtp} className="glass-card animate-fade-in" style={cardStyle}>
+          <h2 style={{ marginBottom: '0.5rem', textAlign: 'center' }}>Enter OTP</h2>
+          <p style={muteStyle}>A 6-digit reset code was sent to <strong>{emailVal}</strong>. It expires in 5 minutes.</p>
+          {error && <p style={errorStyle}>{error}</p>}
+          <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'center', marginBottom: '1.5rem' }}>
+            {otp.map((digit, idx) => (
+              <input
+                key={idx}
+                ref={el => { otpRefs[idx].current = el; }}
+                type="text"
+                inputMode="numeric"
+                maxLength={1}
+                value={digit}
+                onChange={e => handleOtpChange(idx, e.target.value)}
+                onKeyDown={e => handleOtpKey(idx, e)}
+                style={{
+                  width: '48px', height: '56px', textAlign: 'center', fontSize: '1.5rem', fontWeight: 'bold',
+                  background: 'var(--surface)', border: '2px solid var(--border)', borderRadius: 'var(--radius-md)',
+                  color: 'var(--text-main)', outline: 'none', transition: 'border-color 0.2s',
+                }}
+                onFocus={e => e.target.style.borderColor = 'var(--primary)'}
+                onBlur={e  => e.target.style.borderColor = 'var(--border)'}
+                autoFocus={idx === 0}
+              />
+            ))}
+          </div>
+          <button type="submit" className="btn btn-primary" style={{ width: '100%', marginBottom: '1rem' }} disabled={loading || otp.join('').length < 6}>{loading ? 'Verifying…' : 'Verify Code'}</button>
+          <p style={{ textAlign: 'center' }}><span style={{ color: 'var(--text-muted)', fontSize: '0.85rem', cursor: 'pointer' }} onClick={() => { setStep('EMAIL'); setOtp(['','','','','','']); setError(''); }}>← Resend code</span></p>
+        </form>
+      )}
+
+      {step === 'PASSWORD' && (
+        <form onSubmit={resetPassword} className="glass-card animate-fade-in" style={cardStyle}>
+          <h2 style={{ marginBottom: '0.5rem', textAlign: 'center' }}>New Password</h2>
+          <p style={muteStyle}>Set a new password for <strong>{emailVal}</strong>. This only applies to your own account.</p>
+          {error && <p style={errorStyle}>{error}</p>}
+          <input className="input-field" type="password" placeholder="New password (min 6 chars)" value={newPw} onChange={e => setNewPw(e.target.value)} required autoFocus />
+          <input className="input-field" type="password" placeholder="Confirm new password" value={confirmPw} onChange={e => setConfirmPw(e.target.value)} required />
+          <button type="submit" className="btn btn-primary" style={{ width: '100%', marginBottom: '1rem' }} disabled={loading}>{loading ? 'Saving…' : 'Reset Password'}</button>
+        </form>
+      )}
+
+      {step === 'SUCCESS' && (
+        <div className="glass-card animate-fade-in" style={{ ...cardStyle, textAlign: 'center' }}>
+          <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>✓</div>
+          <h2 style={{ marginBottom: '0.75rem', color: 'var(--primary)' }}>Password Updated</h2>
+          <p style={muteStyle}>Your password has been reset successfully. You can now log in with your new credentials.</p>
+          <button className="btn btn-primary" style={{ width: '100%' }} onClick={onBack}>Back to Login</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DashboardView({ onSelectBatch }) {
+
   const { batches, addBatch, deleteBatch, updateBatch } = useStore();
   const [name, setName] = useState('');
   const [editingId, setEditingId] = useState(null);
@@ -262,6 +480,26 @@ function StudentsTab({ items, batchId, onViewStudent }) {
   const handleUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
+
+    const validTypes = ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel', 'text/csv'];
+    const validExtensions = ['xlsx', 'xls', 'csv'];
+    const extension = file.name.split('.').pop().toLowerCase();
+
+    if (file.type && !validTypes.includes(file.type)) {
+      alert("Invalid file type. Only Excel or CSV files are allowed.");
+      e.target.value = null;
+      return;
+    }
+    if (!validExtensions.includes(extension)) {
+      alert("Invalid file extension. Please upload a .xlsx, .xls, or .csv file.");
+      e.target.value = null;
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      alert("File is too large! Maximum size is 5MB.");
+      e.target.value = null;
+      return;
+    }
 
     const reader = new FileReader();
     reader.onload = (evt) => {
@@ -542,6 +780,26 @@ function ActivitiesTab({ items, batchId, onAttend }) {
   const handleUploadActivities = (e) => {
     const file = e.target.files[0];
     if (!file) return;
+
+    const validTypes = ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel', 'text/csv'];
+    const validExtensions = ['xlsx', 'xls', 'csv'];
+    const extension = file.name.split('.').pop().toLowerCase();
+
+    if (file.type && !validTypes.includes(file.type)) {
+      alert("Invalid file type. Only Excel or CSV files are allowed.");
+      e.target.value = null;
+      return;
+    }
+    if (!validExtensions.includes(extension)) {
+      alert("Invalid file extension. Please upload a .xlsx, .xls, or .csv file.");
+      e.target.value = null;
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      alert("File is too large! Maximum size is 5MB.");
+      e.target.value = null;
+      return;
+    }
 
     const reader = new FileReader();
     reader.onload = (evt) => {
@@ -1029,21 +1287,53 @@ function StudentDetailView({ studentId, onBack }) {
 }
 
 function SettingsView({ onBack }) {
-  const { adminEmail, setAdminEmail, webhookUrl, setWebhookUrl, pendingUsers, approveUser, rejectUser, admins, currentUser, removeAdmin, editAdmin } = useStore();
+  const { adminEmail, setAdminEmail, pendingUsers, approveUser, rejectUser, admins, currentUser, removeAdmin, editAdmin } = useStore();
   const [emailInput, setEmailInput] = useState(adminEmail);
-  const [webhookInput, setWebhookInput] = useState(webhookUrl);
+  const [webhookInput, setWebhookInput] = useState('');
+  const [webhookStatus, setWebhookStatus] = useState(null); // null | true | false
+  const [webhookSaving, setWebhookSaving] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/webhook/status')
+      .then(r => r.json())
+      .then(d => setWebhookStatus(d.configured))
+      .catch(() => setWebhookStatus(false));
+  }, []);
+
+  const saveWebhook = async () => {
+    if (!webhookInput.trim()) { alert('Please paste the Google Apps Script URL first.'); return; }
+    setWebhookSaving(true);
+    try {
+      const res = await apiFetch('/api/webhook', {
+        method: 'PUT',
+        body: JSON.stringify({ webhookUrl: webhookInput.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) { alert('Error: ' + data.error); return; }
+      alert('Webhook URL updated securely on the server!');
+      setWebhookInput(''); // Clear immediately — never keep URL in state
+      setWebhookStatus(true);
+    } catch (e) {
+      alert('Could not reach the server. Is the backend running?');
+    } finally {
+      setWebhookSaving(false);
+    }
+  };
   
   const [editingAdmin, setEditingAdmin] = useState(null);
   const [editAdminForm, setEditAdminForm] = useState({ username: '', email: '', password: '' });
 
   const startEditAdmin = (admin) => {
     setEditingAdmin(admin.id);
-    setEditAdminForm({ username: admin.username, email: admin.email || '', password: admin.password });
+    // Never prefill the password — user types a new one only if they want to change it
+    setEditAdminForm({ username: admin.username, email: admin.email || '', password: '' });
   };
 
-  const saveEditAdmin = (id) => {
-    editAdmin(id, editAdminForm);
+  const saveEditAdmin = async (id) => {
+    await editAdmin(id, editAdminForm);
     setEditingAdmin(null);
+    // Clear the password field — never show a hash in the UI
+    setEditAdminForm(prev => ({ ...prev, password: '' }));
   };
 
   return (
@@ -1058,17 +1348,33 @@ function SettingsView({ onBack }) {
         <p style={{ color: 'var(--text-muted)', marginBottom: '1rem', lineHeight: 1.5 }}>
           This is the primary email address that will receive secure live notifications from the Webhook whenever anyone requests an admin account.
         </p>
-        <div style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem' }}>
+        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
           <input className="input-field" style={{ maxWidth: 300, marginBottom: 0 }} type="email" value={emailInput} onChange={e=>setEmailInput(e.target.value)} />
+          <button className="btn btn-primary" onClick={() => { setAdminEmail(emailInput); alert('Email configuration saved!'); }}>Save Email</button>
         </div>
 
-        <h3 style={{ marginBottom: '1rem' }}>Google Apps Script Webhook URL</h3>
-        <p style={{ color: 'var(--text-muted)', marginBottom: '1rem', lineHeight: 1.5 }}>
-          The secure script URL that triggers email delivery. Update this if you deploy your own Google Script to transfer ownership.
+        <h3 style={{ marginBottom: '0.5rem', marginTop: '1.5rem' }}>Google Apps Script Webhook</h3>
+        <p style={{ color: 'var(--text-muted)', marginBottom: '1rem', fontSize: '0.85rem', lineHeight: 1.5 }}>
+          Paste your Google Apps Script deployment URL below. It is sent directly to the server and <strong>never stored in the browser</strong>. Leave blank to keep the current URL.
         </p>
-        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-          <input className="input-field" style={{ flex: 1, minWidth: '250px', marginBottom: 0 }} type="text" value={webhookInput} onChange={e=>setWebhookInput(e.target.value)} />
-          <button className="btn btn-primary" onClick={() => { setAdminEmail(emailInput); setWebhookUrl(webhookInput); alert('Configuration saved securely!'); }}>Save Settings</button>
+        {webhookStatus !== null && (
+          <p style={{ fontSize: '0.82rem', marginBottom: '0.75rem', color: webhookStatus ? 'var(--success, #4ade80)' : 'var(--danger, #f87171)' }}>
+            {webhookStatus ? '✓ Webhook is configured on the server' : '✗ No webhook URL configured yet'}
+          </p>
+        )}
+        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+          <input
+            className="input-field"
+            style={{ flex: 1, minWidth: '260px', marginBottom: 0 }}
+            type="password"
+            placeholder="Paste new Google Apps Script URL…"
+            value={webhookInput}
+            onChange={e => setWebhookInput(e.target.value)}
+            autoComplete="off"
+          />
+          <button className="btn btn-primary" style={{ marginBottom: 0 }} onClick={saveWebhook} disabled={webhookSaving}>
+            {webhookSaving ? 'Saving…' : 'Update Webhook'}
+          </button>
         </div>
       </div>
 

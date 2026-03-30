@@ -1,4 +1,82 @@
 import * as XLSX from 'xlsx';
+import DOMPurify from 'dompurify';
+import validator from 'validator';
+
+export const sanitizeStrict = (input, type = 'text') => {
+  if (typeof input !== 'string') return input;
+  
+  // 1. Script injection mitigation (XSS)
+  const clean = DOMPurify.sanitize(input, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] }).trim();
+
+  if (!clean && input) throw new Error("Invalid input detected.");
+
+  switch (type) {
+    case 'email':
+      if (!validator.isEmail(clean)) throw new Error('Invalid email format');
+      return validator.normalizeEmail(clean);
+    case 'password':
+          if (clean.length < 8) throw new Error('Password must be at least 8 characters');
+      return clean;
+    case 'url':
+      if (!validator.isURL(clean, { require_protocol: true })) throw new Error('Invalid URL');
+      return clean;
+    case 'number':
+      if (!validator.isNumeric(clean.toString())) throw new Error('Invalid number');
+      return clean;
+    case 'name':
+      // Basic chars only: Alphanumerics, spaces, basic punctuation
+      if (!validator.matches(clean, /^[\w\s.,'-]+$/)) throw new Error('Invalid characters in name');
+      return clean;
+    case 'date':
+      if (!validator.isDate(clean, { format: 'YYYY-MM-DD', strictMode: false })) throw new Error('Invalid date');
+      return clean;
+    case 'text':
+    default:
+      // Generic text strictness
+      return validator.escape(clean);
+  }
+};
+
+export const deepSanitize = (obj) => {
+  if (typeof obj === 'string') return sanitizeStrict(obj, 'text');
+  if (Array.isArray(obj)) return obj.map(deepSanitize);
+  if (typeof obj === 'object' && obj !== null) {
+    const cleanObj = {};
+    for (const key in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        const cleanKey = DOMPurify.sanitize(validator.escape(key.trim()));
+        cleanObj[cleanKey] = deepSanitize(obj[key]);
+      }
+    }
+    return cleanObj;
+  }
+  if (typeof obj === 'number' || typeof obj === 'boolean') return obj;
+  return null;
+};
+
+export const checkRateLimit = (action, maxAttempts, windowMs) => {
+  const now = Date.now();
+  const key = `ratelimit_${action}`;
+  try {
+    const data = JSON.parse(localStorage.getItem(key) || '{"count": 0, "resetTime": 0}');
+    if (now > data.resetTime) {
+      data.count = 1;
+      data.resetTime = now + windowMs;
+    } else {
+      data.count++;
+    }
+    localStorage.setItem(key, JSON.stringify(data));
+    
+    if (data.count > maxAttempts) {
+      const remainingSeconds = Math.ceil((data.resetTime - now) / 1000);
+      const remainingMinutes = Math.ceil(remainingSeconds / 60);
+      return { allowed: false, remainingStr: remainingMinutes > 1 ? `${remainingMinutes} minutes` : `${remainingSeconds} seconds` };
+    }
+    return { allowed: true };
+  } catch (e) {
+    return { allowed: true }; // allow on error
+  }
+};
 
 export const hashPassword = async (password) => {
   const msgBuffer = new TextEncoder().encode(password);

@@ -1,4 +1,17 @@
 node_modules/
 dist/
 build/
+
+# Secrets - NEVER commit these
 .env
+.env.local
+.env.*.local
+
+# Safe to commit - contains only placeholder values
+# .env.example
+
+# Local server data files (contain user records)
+data/
+
+# Runtime log files (contain IPs and auth events — never commit)
+logs/

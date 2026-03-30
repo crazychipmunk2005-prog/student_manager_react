@@ -2,18 +2,20 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { initializeApp } from "firebase/app";
 import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
-
+import { sanitizeStrict, deepSanitize, hashPassword } from './utils';
 // ==========================================
-// TODO: PASTE YOUR FIREBASE CONFIG HERE
+// Firebase config loaded from environment variables.
+// Copy .env.example -> .env and fill in your values.
+// NEVER hardcode secrets here.
 // ==========================================
 const firebaseConfig = {
-  apiKey: "AIzaSyDqFWqh7tRYyLaQ2j5KRC1rBb-n-WEAKOE",
-  authDomain: "student-management-syste-fe04a.firebaseapp.com",
-  projectId: "student-management-syste-fe04a",
-  storageBucket: "student-management-syste-fe04a.firebasestorage.app",
-  messagingSenderId: "612009754941",
-  appId: "1:612009754941:web:0c9cf78e7cb793a3f78554",
-  measurementId: "G-07DQB9RDTW"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
 };
 
 let app, db;
@@ -34,10 +36,11 @@ export const useStore = create(
       attendance: [],
       currentUser: null,
       
-      adminEmail: 'gktunoff@gmail.com',
-      webhookUrl: 'https://script.google.com/macros/s/AKfycbxuG2RZSgoaugHxI0z5ToLG6cY-BUQWFCaCgN31FeCQR5iRdZPOxE9RvKK1tY56_otBQA/exec',
+      adminEmail: import.meta.env.VITE_ADMIN_EMAIL || '',
       pendingUsers: [],
       isLoadedFromServer: false,
+      sessionToken: null,
+      sessionExpiry: null,
       
       // Initialization to hydrate store from Firebase Firestore
       loadFromServer: async () => {
@@ -67,20 +70,21 @@ export const useStore = create(
         }
       },
   
-  setAdminEmail: (email) => set({ adminEmail: email }),
-  setWebhookUrl: (url) => set({ webhookUrl: url }),
+  setAdminEmail: (email) => { try { set({ adminEmail: sanitizeStrict(email, 'email') }); } catch (e) { alert(e.message); } },
+  // NOTE: webhook URL is managed server-side only via WEBHOOK_URL env var.
 
-  submitSignupRequest: (username, email, password) => {
-    const { admins, pendingUsers } = get();
-    
-    // Block if they are ALREADY an approved admin
-    if (admins.some(a => a.username === username || a.email === email)) return false;
-    
-    // If they have a pending request, remove it and create a fresh one
-    const filteredPending = pendingUsers.filter(p => p.email !== email && p.username !== username);
-    
-    set({ pendingUsers: [...filteredPending, { id: Date.now(), username, email, password }] });
-    return true;
+  submitSignupRequest: async (username, email, password) => {
+    try {
+      const cUsername = sanitizeStrict(username, 'name');
+      const cEmail = sanitizeStrict(email, 'email');
+      const cPassword = sanitizeStrict(password, 'password');
+      const hPassword = await hashPassword(cPassword);
+      const { admins, pendingUsers } = get();
+      if (admins.some(a => a.username === cUsername || a.email === cEmail)) return false;
+      const filteredPending = pendingUsers.filter(p => p.email !== cEmail && p.username !== cUsername);
+      set({ pendingUsers: [...filteredPending, { id: Date.now(), username: cUsername, email: cEmail, password: hPassword }] });
+      return true;
+    } catch (e) { alert(e.message); return false; }
   },
 
   approveUser: (id) => {
@@ -95,60 +99,158 @@ export const useStore = create(
   },
 
   rejectUser: (id) => {
-    const { pendingUsers } = get();
+    // IDOR guard: only the main admin (id:1) can reject pending registrations
+    const { pendingUsers, currentUser } = get();
+    if (currentUser?.id !== 1) { alert('Only the main administrator can reject registrations.'); return; }
     set({ pendingUsers: pendingUsers.filter(u => u.id !== id) });
   },
 
   removeAdmin: (id) => {
     const { admins, currentUser } = get();
-    // Prevent removing the main admin (id: 1) or oneself
+    // IDOR guard: only the main admin (id:1) can remove other admins
+    if (currentUser?.id !== 1) {
+      alert('Only the main administrator can remove other admins.');
+      return false;
+    }
+    // Main admin cannot remove themselves or their own root account
     if (id === 1 || id === currentUser?.id) return false;
     set({ admins: admins.filter(a => a.id !== id) });
     return true;
   },
 
-  registerFirstAdmin: (username, email, password) => {
-    const { admins } = get();
-    if (admins.length > 0) return false;
-    const newAdmin = { id: 1, username, email, password };
-    set({ admins: [newAdmin], currentUser: newAdmin });
-    return true;
-  },
-  
-  registerAdmin: (username, password) => {
-    const { admins } = get();
-    if (admins.some(a => a.username === username)) return false;
-    const newAdmin = { id: Date.now(), username, password };
-    set({ admins: [...admins, newAdmin], currentUser: newAdmin });
-    return true;
-  },
-  
-  login: (identifier, password) => {
-    const { admins } = get();
-    const user = admins.find(a => (a.username === identifier || a.email === identifier) && a.password === password);
-    if (user) {
-      set({ currentUser: user });
+  registerFirstAdmin: async (username, email, password) => {
+    try {
+      const cUsername = sanitizeStrict(username, 'name');
+      const cEmail    = sanitizeStrict(email, 'email');
+      if (password.length < 8) throw new Error('Password must be at least 8 characters.');
+      // Hash password server-side with bcrypt
+      const { apiFetch } = await import('./App.jsx');
+      const hashRes = await apiFetch('/api/auth/hash', { method: 'POST', body: JSON.stringify({ password }) });
+      const hashData = await hashRes.json();
+      if (!hashRes.ok) throw new Error(hashData.error || 'Hashing failed.');
+      const { admins } = get();
+      if (admins.length > 0) return false;
+      const newAdmin = { id: 1, username: cUsername, email: cEmail, password: hashData.hash };
+      set({ admins: [newAdmin], currentUser: { id: 1, username: cUsername, email: cEmail } });
       return true;
-    }
-    return false;
+    } catch (e) { alert(e.message); return false; }
+  },
+  
+  registerAdmin: async (username, password) => {
+    try {
+      const cUsername = sanitizeStrict(username, 'name');
+      if (password.length < 8) throw new Error('Password must be at least 8 characters.');
+      const { apiFetch } = await import('./App.jsx');
+      const hashRes = await apiFetch('/api/auth/hash', { method: 'POST', body: JSON.stringify({ password }) });
+      const hashData = await hashRes.json();
+      if (!hashRes.ok) throw new Error(hashData.error || 'Hashing failed.');
+      const { admins } = get();
+      if (admins.some(a => a.username === cUsername)) return false;
+      const newAdmin = { id: Date.now(), username: cUsername, password: hashData.hash };
+      set({ admins: [...admins, newAdmin], currentUser: { id: newAdmin.id, username: cUsername } });
+      return true;
+    } catch (e) { alert(e.message); return false; }
+  },
+  
+  login: async (identifier, password) => {
+    try {
+      const cId = sanitizeStrict(identifier, 'text');
+      if (!password || password.length < 1) return false;
+      const { admins } = get();
+      // Find the admin record by username or email
+      const admin = admins.find(a => a.username === cId || a.email === cId);
+      if (!admin) return false;
+      // Server-side bcrypt verification (handles both legacy SHA-256 and bcrypt)
+      const { apiFetch } = await import('./App.jsx');
+      const res  = await apiFetch('/api/auth/verify', {
+        method: 'POST',
+        body: JSON.stringify({ password, hash: admin.password, adminId: admin.id })
+      });
+      const data = await res.json();
+      if (!res.ok) return false;
+      // If the stored hash is legacy SHA-256, upgrade to bcrypt silently
+      if (data.needsUpgrade) {
+        const hashRes  = await apiFetch('/api/auth/hash', { method: 'POST', body: JSON.stringify({ password }) });
+        const hashData = await hashRes.json();
+        if (hashRes.ok) {
+          const upgraded = admins.map(a => a.id === admin.id ? { ...a, password: hashData.hash } : a);
+          set({ admins: upgraded });
+        }
+      }
+      // Store session — strip password from currentUser in state
+      const { password: _pw, ...safeUser } = admin;
+      set({
+        currentUser:   safeUser,
+        sessionToken:  data.sessionToken,
+        sessionExpiry: data.sessionExpiry,
+      });
+      return true;
+    } catch (e) { console.error(e); return false; }
   },
   
   forceLogin: (adminUser) => set({ currentUser: adminUser }),
   
-  editAdmin: (adminId, updatedAdminData) => {
-    const { admins, currentUser } = get();
-    const newAdmins = admins.map(a => a.id === adminId ? { ...a, ...updatedAdminData } : a);
-    set({ admins: newAdmins });
-    if (currentUser?.id === adminId) {
-       set({ currentUser: { ...currentUser, ...updatedAdminData } });
-    }
+  editAdmin: async (adminId, updatedAdminData) => {
+    try {
+      const { admins, currentUser } = get();
+      const isSelf      = currentUser?.id === adminId;
+      const isMainAdmin = currentUser?.id === 1;
+      if (!isSelf && !isMainAdmin) { alert('You can only edit your own admin profile.'); return; }
+      const safeData = deepSanitize(updatedAdminData);
+      delete safeData.id;
+      if (safeData.password && safeData.password.length >= 8) {
+        // Hash new password server-side with bcrypt
+        const { apiFetch } = await import('./App.jsx');
+        const hashRes  = await apiFetch('/api/auth/hash', { method: 'POST', body: JSON.stringify({ password: safeData.password }) });
+        const hashData = await hashRes.json();
+        if (!hashRes.ok) { alert(hashData.error || 'Hashing failed.'); return; }
+        safeData.password = hashData.hash;
+      } else if (safeData.password && safeData.password.length < 8) {
+        alert('Password must be at least 8 characters.');
+        return;
+      } else {
+        delete safeData.password;
+      }
+      const newAdmins = admins.map(a => a.id === adminId ? { ...a, ...safeData } : a);
+      set({ admins: newAdmins });
+      // Update currentUser but never store the password hash in state
+      if (currentUser?.id === adminId) {
+        const { password: _pw, ...safeUpdate } = safeData;
+        set({ currentUser: { ...currentUser, ...safeUpdate } });
+      }
+    } catch (e) { alert(e.message); }
   },
   
-  logout: () => set({ currentUser: null }),
+  logout: async () => {
+    const { sessionToken } = get();
+    // Invalidate the server-side session
+    if (sessionToken) {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST', headers: { 'x-session-token': sessionToken } });
+      } catch { /* best-effort */ }
+    }
+    set({ currentUser: null, sessionToken: null, sessionExpiry: null });
+  },
 
-  addBatch: (name) => set((state) => ({
-    batches: [...state.batches, { id: Date.now(), name }]
-  })),
+  // Applied after a successful server-side OTP reset flow.
+  // The hashedPassword comes from the server (never from user input directly).
+  applyPasswordReset: (email, hashedPassword) => {
+    const { admins } = get();
+    const normalizedEmail = email.toLowerCase().trim();
+    const newAdmins = admins.map(a =>
+      (a.email || '').toLowerCase().trim() === normalizedEmail
+        ? { ...a, password: hashedPassword }
+        : a
+    );
+    set({ admins: newAdmins });
+  },
+
+  addBatch: (name) => {
+    try {
+      const cName = sanitizeStrict(name, 'name');
+      set((state) => ({ batches: [...state.batches, { id: Date.now(), name: cName }] }));
+    } catch (e) { alert(e.message); }
+  },
   
   deleteBatch: (id) => set((state) => {
     const activityIds = state.activities.filter(a => a.batchId === id).map(a => a.id);
@@ -160,30 +262,45 @@ export const useStore = create(
     };
   }),
 
-  updateBatch: (updated) => set((state) => ({
-    batches: state.batches.map(b => b.id === updated.id ? updated : b)
-  })),
+  updateBatch: (updated) => {
+    try {
+      const safeData = deepSanitize(updated);
+      if (safeData) set((state) => ({ batches: state.batches.map(b => b.id === safeData.id ? safeData : b) }));
+    } catch (e) { alert(e.message); }
+  },
   
-  addStudent: (student) => set((state) => ({
-    students: [...state.students, { ...student, id: Date.now() }]
-  })),
+  addStudent: (student) => {
+    try {
+      const safeStudent = deepSanitize(student);
+      if (safeStudent) set((state) => ({ students: [...state.students, { ...safeStudent, id: Date.now() }] }));
+    } catch (e) { alert(e.message); }
+  },
   
-  updateStudent: (updated) => set((state) => ({
-    students: state.students.map(s => s.id === updated.id ? updated : s)
-  })),
+  updateStudent: (updated) => {
+    try {
+      const safeData = deepSanitize(updated);
+      if (safeData) set((state) => ({ students: state.students.map(s => s.id === safeData.id ? safeData : s) }));
+    } catch (e) { alert(e.message); }
+  },
   
   deleteStudent: (id) => set((state) => ({
     students: state.students.filter(s => s.id !== id),
     attendance: state.attendance.filter(a => a.studentId !== id)
   })),
 
-  addActivity: (activity) => set((state) => ({
-    activities: [...state.activities, { ...activity, id: Date.now() }]
-  })),
+  addActivity: (activity) => {
+    try {
+      const safeAct = deepSanitize(activity);
+      if (safeAct) set((state) => ({ activities: [...state.activities, { ...safeAct, id: Date.now() }] }));
+    } catch (e) { alert(e.message); }
+  },
   
-  updateActivity: (updated) => set((state) => ({
-    activities: state.activities.map(a => a.id === updated.id ? updated : a)
-  })),
+  updateActivity: (updated) => {
+    try {
+      const safeData = deepSanitize(updated);
+      if (safeData) set((state) => ({ activities: state.activities.map(a => a.id === safeData.id ? safeData : a) }));
+    } catch (e) { alert(e.message); }
+  },
 
   deleteActivity: (id) => set((state) => ({
     activities: state.activities.filter(a => a.id !== id),
@@ -195,24 +312,35 @@ export const useStore = create(
     return { attendance: [...otherLogs, ...records] };
   }),
 
-  bulkImport: (newStudents, newActivities, newAttendance) => set((state) => {
-    // Overwrite attendance for the imported activities to prevent duplicates
-    const importedActIds = [...new Set(newAttendance.map(a => a.activityId))];
-    const untouchedAttendance = state.attendance.filter(a => !importedActIds.includes(a.activityId));
-    
-    return {
-      students: [...state.students, ...newStudents],
-      activities: [...state.activities, ...newActivities],
-      attendance: [...untouchedAttendance, ...newAttendance]
-    };
-  }),
+  bulkImport: (newStudents, newActivities, newAttendance) => {
+    try {
+      const safeStudents = deepSanitize(newStudents) || [];
+      const safeActivities = deepSanitize(newActivities) || [];
+      const safeAttendance = deepSanitize(newAttendance) || [];
+
+      set((state) => {
+        const importedActIds = [...new Set(safeAttendance.map(a => a.activityId))];
+        const untouchedAttendance = state.attendance.filter(a => !importedActIds.includes(a.activityId));
+        return {
+          students: [...state.students, ...safeStudents],
+          activities: [...state.activities, ...safeActivities],
+          attendance: [...untouchedAttendance, ...safeAttendance]
+        };
+      });
+    } catch (e) { alert("Bulk import validation failed: " + e.message); }
+  },
     }),
     {
       name: 'student-manager-auth',
       partialize: (state) => ({
-        currentUser: state.currentUser,
+        // sessionToken and currentUser.password are intentionally excluded
+        // from localStorage — they must never be persisted
+        currentUser: state.currentUser
+          ? (({ password, ...rest }) => rest)(state.currentUser)
+          : null,
         adminEmail: state.adminEmail,
-        webhookUrl: state.webhookUrl,
+        // sessionExpiry IS persisted so the browser can check it on reload
+        sessionExpiry: state.sessionExpiry,
       }),
     }
   )
