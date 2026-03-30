@@ -2,371 +2,332 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { initializeApp } from "firebase/app";
 import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
-import { sanitizeStrict, deepSanitize, hashPassword } from './utils';
-// ==========================================
-// Firebase config loaded from environment variables.
-// Copy .env.example -> .env and fill in your values.
-// NEVER hardcode secrets here.
-// ==========================================
+import { sanitizeStrict, deepSanitize, hashPassword, hashSHA256 } from './utils';
+
+// ============================================================
+// Firebase config — loaded from environment variables only.
+// Copy .env.example → .env and fill in your values.
+// ============================================================
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain:        import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket:     import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+  appId:             import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId:     import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 };
 
 let app, db;
 try {
   app = initializeApp(firebaseConfig);
-  db = getFirestore(app);
+  db  = getFirestore(app);
 } catch (e) {
-  console.error("Firebase App Initialization Error", e);
+  console.error('Firebase App Initialization Error', e);
+}
+
+// ─── Firestore helpers ───────────────────────────────────────────────────────
+const mainDocRef  = () => doc(db, 'student_manager', 'main_data');
+const otpDocRef   = () => doc(db, 'student_manager', 'otp_requests');
+
+// ─── Send email via Google Apps Script (fire-and-forget) ────────────────────
+// Called directly from the browser — no server needed.
+// GAS doesn't return CORS headers, so we use no-cors (can't read response).
+export async function callWebhook(webhookUrl, payload) {
+  if (!webhookUrl) return;
+  try {
+    await fetch(webhookUrl, {
+      method: 'POST',
+      mode: 'no-cors',    // GAS doesn't support CORS — fire-and-forget
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    console.warn('Webhook call failed (non-critical):', e.message);
+  }
 }
 
 export const useStore = create(
   persist(
     (set, get) => ({
-      admins: [],
-      batches: [],
-      students: [],
-      activities: [],
-      attendance: [],
-      currentUser: null,
-      
-      adminEmail: import.meta.env.VITE_ADMIN_EMAIL || '',
-      pendingUsers: [],
+      admins:            [],
+      batches:           [],
+      students:          [],
+      activities:        [],
+      attendance:        [],
+      currentUser:       null,
+      adminEmail:        import.meta.env.VITE_ADMIN_EMAIL || '',
+      webhookUrl:        import.meta.env.VITE_WEBHOOK_URL || '',  // seeded from env, updatable via Settings→Firestore
+      pendingUsers:      [],
       isLoadedFromServer: false,
-      sessionToken: null,
-      sessionExpiry: null,
-      
-      // Initialization to hydrate store from Firebase Firestore
+      sessionExpiry:     null, // 8-hour client-side session guard
+
+      // ── Bootstrap from Firestore ────────────────────────────────────────
       loadFromServer: async () => {
         try {
           if (!db) return set({ isLoadedFromServer: true });
-          const docRef = doc(db, 'student_manager', 'main_data');
-          const docSnap = await getDoc(docRef);
-          if (docSnap.exists()) {
-            const data = docSnap.data();
+          const snap = await getDoc(mainDocRef());
+          if (snap.exists()) {
+            const d = snap.data();
             set({
-               admins: data.admins || [],
-               batches: data.batches || [],
-               students: data.students || [],
-               activities: data.activities || [],
-               attendance: data.attendance || [],
-               pendingUsers: data.pendingUsers || [],
-               isLoadedFromServer: true
+              admins:       d.admins       || [],
+              batches:      d.batches      || [],
+              students:     d.students     || [],
+              activities:   d.activities   || [],
+              attendance:   d.attendance   || [],
+              pendingUsers: d.pendingUsers || [],
+              webhookUrl:   d.webhookUrl   || import.meta.env.VITE_WEBHOOK_URL || '',
+              isLoadedFromServer: true,
             });
           } else {
-            // Database is new/empty, initialized safely
             set({ isLoadedFromServer: true });
           }
         } catch (e) {
           console.error('Failed to connect to Firebase DB', e);
-          alert('FIREBASE CLOUD FIREWALL ERROR (READ): ' + e.message + '\n\nYour app cannot pull data from the cloud! Check your Firestore Rules!');
-          set({ isLoadedFromServer: true }); // block break failsafe
+          alert('FIREBASE ERROR (READ): ' + e.message + '\n\nCheck your Firestore Rules!');
+          set({ isLoadedFromServer: true });
         }
       },
-  
-  setAdminEmail: (email) => { try { set({ adminEmail: sanitizeStrict(email, 'email') }); } catch (e) { alert(e.message); } },
-  // NOTE: webhook URL is managed server-side only via WEBHOOK_URL env var.
 
-  submitSignupRequest: async (username, email, password) => {
-    try {
-      const cUsername = sanitizeStrict(username, 'name');
-      const cEmail = sanitizeStrict(email, 'email');
-      const cPassword = sanitizeStrict(password, 'password');
-      const hPassword = await hashPassword(cPassword);
-      const { admins, pendingUsers } = get();
-      if (admins.some(a => a.username === cUsername || a.email === cEmail)) return false;
-      const filteredPending = pendingUsers.filter(p => p.email !== cEmail && p.username !== cUsername);
-      set({ pendingUsers: [...filteredPending, { id: Date.now(), username: cUsername, email: cEmail, password: hPassword }] });
-      return true;
-    } catch (e) { alert(e.message); return false; }
-  },
+      // ── Settings ────────────────────────────────────────────────────────
+      setAdminEmail:  (email) => { try { set({ adminEmail: sanitizeStrict(email, 'email') }); } catch (e) { alert(e.message); } },
+      setWebhookUrl:  (url)   => { try { set({ webhookUrl: sanitizeStrict(url, 'url') }); } catch (e) { alert(e.message); } },
 
-  approveUser: (id) => {
-    const { pendingUsers, admins } = get();
-    const user = pendingUsers.find(u => u.id === id);
-    if (user) {
-      set({
-        admins: [...admins, user],
-        pendingUsers: pendingUsers.filter(u => u.id !== id)
-      });
-    }
-  },
+      // ── Pending user signup ──────────────────────────────────────────────
+      submitSignupRequest: async (username, email, password) => {
+        try {
+          const cUsername = sanitizeStrict(username, 'name');
+          const cEmail    = sanitizeStrict(email, 'email');
+          if (password.length < 8) throw new Error('Password must be at least 8 characters.');
+          const pending_id = Date.now();
+          const hPassword  = await hashPassword(password, String(pending_id));
+          const { admins, pendingUsers } = get();
+          if (admins.some(a => a.username === cUsername || a.email === cEmail)) return false;
+          const filtered = pendingUsers.filter(p => p.email !== cEmail && p.username !== cUsername);
+          set({ pendingUsers: [...filtered, { id: pending_id, username: cUsername, email: cEmail, password: hPassword }] });
+          return true;
+        } catch (e) { alert(e.message); return false; }
+      },
 
-  rejectUser: (id) => {
-    // IDOR guard: only the main admin (id:1) can reject pending registrations
-    const { pendingUsers, currentUser } = get();
-    if (currentUser?.id !== 1) { alert('Only the main administrator can reject registrations.'); return; }
-    set({ pendingUsers: pendingUsers.filter(u => u.id !== id) });
-  },
+      approveUser: (id) => {
+        const { pendingUsers, admins, currentUser } = get();
+        if (currentUser?.id !== 1) { alert('Only the main administrator can approve registrations.'); return; }
+        const user = pendingUsers.find(u => u.id === id);
+        if (user) set({ admins: [...admins, user], pendingUsers: pendingUsers.filter(u => u.id !== id) });
+      },
 
-  removeAdmin: (id) => {
-    const { admins, currentUser } = get();
-    // IDOR guard: only the main admin (id:1) can remove other admins
-    if (currentUser?.id !== 1) {
-      alert('Only the main administrator can remove other admins.');
-      return false;
-    }
-    // Main admin cannot remove themselves or their own root account
-    if (id === 1 || id === currentUser?.id) return false;
-    set({ admins: admins.filter(a => a.id !== id) });
-    return true;
-  },
+      rejectUser: (id) => {
+        const { pendingUsers, currentUser } = get();
+        if (currentUser?.id !== 1) { alert('Only the main administrator can reject registrations.'); return; }
+        set({ pendingUsers: pendingUsers.filter(u => u.id !== id) });
+      },
 
-  registerFirstAdmin: async (username, email, password) => {
-    try {
-      const cUsername = sanitizeStrict(username, 'name');
-      const cEmail    = sanitizeStrict(email, 'email');
-      if (password.length < 8) throw new Error('Password must be at least 8 characters.');
-      // Hash password server-side with bcrypt
-      const { apiFetch } = await import('./App.jsx');
-      const hashRes = await apiFetch('/api/auth/hash', { method: 'POST', body: JSON.stringify({ password }) });
-      const hashData = await hashRes.json();
-      if (!hashRes.ok) throw new Error(hashData.error || 'Hashing failed.');
-      const { admins } = get();
-      if (admins.length > 0) return false;
-      const newAdmin = { id: 1, username: cUsername, email: cEmail, password: hashData.hash };
-      set({ admins: [newAdmin], currentUser: { id: 1, username: cUsername, email: cEmail } });
-      return true;
-    } catch (e) { alert(e.message); return false; }
-  },
-  
-  registerAdmin: async (username, password) => {
-    try {
-      const cUsername = sanitizeStrict(username, 'name');
-      if (password.length < 8) throw new Error('Password must be at least 8 characters.');
-      const { apiFetch } = await import('./App.jsx');
-      const hashRes = await apiFetch('/api/auth/hash', { method: 'POST', body: JSON.stringify({ password }) });
-      const hashData = await hashRes.json();
-      if (!hashRes.ok) throw new Error(hashData.error || 'Hashing failed.');
-      const { admins } = get();
-      if (admins.some(a => a.username === cUsername)) return false;
-      const newAdmin = { id: Date.now(), username: cUsername, password: hashData.hash };
-      set({ admins: [...admins, newAdmin], currentUser: { id: newAdmin.id, username: cUsername } });
-      return true;
-    } catch (e) { alert(e.message); return false; }
-  },
-  
-  login: async (identifier, password) => {
-    try {
-      const cId = sanitizeStrict(identifier, 'text');
-      if (!password || password.length < 1) return false;
-      const { admins } = get();
-      // Find the admin record by username or email
-      const admin = admins.find(a => a.username === cId || a.email === cId);
-      if (!admin) return false;
-      // Server-side bcrypt verification (handles both legacy SHA-256 and bcrypt)
-      const { apiFetch } = await import('./App.jsx');
-      const res  = await apiFetch('/api/auth/verify', {
-        method: 'POST',
-        body: JSON.stringify({ password, hash: admin.password, adminId: admin.id })
-      });
-      const data = await res.json();
-      if (!res.ok) return false;
-      // If the stored hash is legacy SHA-256, upgrade to bcrypt silently
-      if (data.needsUpgrade) {
-        const hashRes  = await apiFetch('/api/auth/hash', { method: 'POST', body: JSON.stringify({ password }) });
-        const hashData = await hashRes.json();
-        if (hashRes.ok) {
-          const upgraded = admins.map(a => a.id === admin.id ? { ...a, password: hashData.hash } : a);
-          set({ admins: upgraded });
-        }
-      }
-      // Store session — strip password from currentUser in state
-      const { password: _pw, ...safeUser } = admin;
-      set({
-        currentUser:   safeUser,
-        sessionToken:  data.sessionToken,
-        sessionExpiry: data.sessionExpiry,
-      });
-      return true;
-    } catch (e) { console.error(e); return false; }
-  },
-  
-  forceLogin: (adminUser) => set({ currentUser: adminUser }),
-  
-  editAdmin: async (adminId, updatedAdminData) => {
-    try {
-      const { admins, currentUser } = get();
-      const isSelf      = currentUser?.id === adminId;
-      const isMainAdmin = currentUser?.id === 1;
-      if (!isSelf && !isMainAdmin) { alert('You can only edit your own admin profile.'); return; }
-      const safeData = deepSanitize(updatedAdminData);
-      delete safeData.id;
-      if (safeData.password && safeData.password.length >= 8) {
-        // Hash new password server-side with bcrypt
-        const { apiFetch } = await import('./App.jsx');
-        const hashRes  = await apiFetch('/api/auth/hash', { method: 'POST', body: JSON.stringify({ password: safeData.password }) });
-        const hashData = await hashRes.json();
-        if (!hashRes.ok) { alert(hashData.error || 'Hashing failed.'); return; }
-        safeData.password = hashData.hash;
-      } else if (safeData.password && safeData.password.length < 8) {
-        alert('Password must be at least 8 characters.');
-        return;
-      } else {
-        delete safeData.password;
-      }
-      const newAdmins = admins.map(a => a.id === adminId ? { ...a, ...safeData } : a);
-      set({ admins: newAdmins });
-      // Update currentUser but never store the password hash in state
-      if (currentUser?.id === adminId) {
-        const { password: _pw, ...safeUpdate } = safeData;
-        set({ currentUser: { ...currentUser, ...safeUpdate } });
-      }
-    } catch (e) { alert(e.message); }
-  },
-  
-  logout: async () => {
-    const { sessionToken } = get();
-    // Invalidate the server-side session
-    if (sessionToken) {
-      try {
-        await fetch('/api/auth/logout', { method: 'POST', headers: { 'x-session-token': sessionToken } });
-      } catch { /* best-effort */ }
-    }
-    set({ currentUser: null, sessionToken: null, sessionExpiry: null });
-  },
+      removeAdmin: (id) => {
+        const { admins, currentUser } = get();
+        if (currentUser?.id !== 1) { alert('Only the main administrator can remove other admins.'); return false; }
+        if (id === 1 || id === currentUser?.id) return false;
+        set({ admins: admins.filter(a => a.id !== id) });
+        return true;
+      },
 
-  // Applied after a successful server-side OTP reset flow.
-  // The hashedPassword comes from the server (never from user input directly).
-  applyPasswordReset: (email, hashedPassword) => {
-    const { admins } = get();
-    const normalizedEmail = email.toLowerCase().trim();
-    const newAdmins = admins.map(a =>
-      (a.email || '').toLowerCase().trim() === normalizedEmail
-        ? { ...a, password: hashedPassword }
-        : a
-    );
-    set({ admins: newAdmins });
-  },
+      // ── Registration ────────────────────────────────────────────────────
+      registerFirstAdmin: async (username, email, password) => {
+        try {
+          const cUsername = sanitizeStrict(username, 'name');
+          const cEmail    = sanitizeStrict(email, 'email');
+          if (password.length < 8) throw new Error('Password must be at least 8 characters.');
+          const { admins } = get();
+          if (admins.length > 0) return false;
+          const hPassword = await hashPassword(password, '1'); // id is always 1 for first admin
+          const newAdmin  = { id: 1, username: cUsername, email: cEmail, password: hPassword };
+          set({ admins: [newAdmin], currentUser: { id: 1, username: cUsername, email: cEmail }, sessionExpiry: Date.now() + 8 * 3600 * 1000 });
+          return true;
+        } catch (e) { alert(e.message); return false; }
+      },
 
-  addBatch: (name) => {
-    try {
-      const cName = sanitizeStrict(name, 'name');
-      set((state) => ({ batches: [...state.batches, { id: Date.now(), name: cName }] }));
-    } catch (e) { alert(e.message); }
-  },
-  
-  deleteBatch: (id) => set((state) => {
-    const activityIds = state.activities.filter(a => a.batchId === id).map(a => a.id);
-    return {
-      batches: state.batches.filter(b => b.id !== id),
-      students: state.students.filter(s => s.batchId !== id),
-      activities: state.activities.filter(a => a.batchId !== id),
-      attendance: state.attendance.filter(a => !activityIds.includes(a.activityId))
-    };
-  }),
+      // ── Login ───────────────────────────────────────────────────────────
+      login: async (identifier, password) => {
+        try {
+          const cId = sanitizeStrict(identifier, 'text');
+          if (!password) return false;
+          const { admins } = get();
+          const admin = admins.find(a => a.username === cId || a.email === cId);
+          if (!admin) return false;
 
-  updateBatch: (updated) => {
-    try {
-      const safeData = deepSanitize(updated);
-      if (safeData) set((state) => ({ batches: state.batches.map(b => b.id === safeData.id ? safeData : b) }));
-    } catch (e) { alert(e.message); }
-  },
-  
-  addStudent: (student) => {
-    try {
-      const safeStudent = deepSanitize(student);
-      if (safeStudent) set((state) => ({ students: [...state.students, { ...safeStudent, id: Date.now() }] }));
-    } catch (e) { alert(e.message); }
-  },
-  
-  updateStudent: (updated) => {
-    try {
-      const safeData = deepSanitize(updated);
-      if (safeData) set((state) => ({ students: state.students.map(s => s.id === safeData.id ? safeData : s) }));
-    } catch (e) { alert(e.message); }
-  },
-  
-  deleteStudent: (id) => set((state) => ({
-    students: state.students.filter(s => s.id !== id),
-    attendance: state.attendance.filter(a => a.studentId !== id)
-  })),
+          const storedHash = admin.password || '';
 
-  addActivity: (activity) => {
-    try {
-      const safeAct = deepSanitize(activity);
-      if (safeAct) set((state) => ({ activities: [...state.activities, { ...safeAct, id: Date.now() }] }));
-    } catch (e) { alert(e.message); }
-  },
-  
-  updateActivity: (updated) => {
-    try {
-      const safeData = deepSanitize(updated);
-      if (safeData) set((state) => ({ activities: state.activities.map(a => a.id === safeData.id ? safeData : a) }));
-    } catch (e) { alert(e.message); }
-  },
+          // ① bcrypt (from previous server-era) — can't verify in browser → force reset
+          if (storedHash.startsWith('$2b$') || storedHash.startsWith('$2a$')) {
+            alert('Your password was stored using a format that requires a reset.\nPlease use "Forgot Password" to set a new password.');
+            return false;
+          }
 
-  deleteActivity: (id) => set((state) => ({
-    activities: state.activities.filter(a => a.id !== id),
-    attendance: state.attendance.filter(a => a.activityId !== id)
-  })),
+          // ② PBKDF2 (current format, prefix $pbkdf2$)
+          if (storedHash.startsWith('$pbkdf2$')) {
+            const hash = await hashPassword(password, String(admin.id));
+            if (hash !== storedHash) return false;
+          } else {
+            // ③ Legacy SHA-256 (no prefix, 64 hex chars) — accept and silently upgrade
+            const legacyHash = await hashSHA256(password);
+            if (legacyHash !== storedHash) return false;
+            // Upgrade to PBKDF2 in the background
+            const newHash    = await hashPassword(password, String(admin.id));
+            const upgraded   = admins.map(a => a.id === admin.id ? { ...a, password: newHash } : a);
+            set({ admins: upgraded });
+          }
 
-  saveAttendance: (activityId, records) => set((state) => {
-    const otherLogs = state.attendance.filter(a => a.activityId !== activityId);
-    return { attendance: [...otherLogs, ...records] };
-  }),
+          const { password: _pw, ...safeUser } = admin;
+          set({ currentUser: safeUser, sessionExpiry: Date.now() + 8 * 3600 * 1000 });
+          return true;
+        } catch (e) { console.error(e); return false; }
+      },
 
-  bulkImport: (newStudents, newActivities, newAttendance) => {
-    try {
-      const safeStudents = deepSanitize(newStudents) || [];
-      const safeActivities = deepSanitize(newActivities) || [];
-      const safeAttendance = deepSanitize(newAttendance) || [];
+      forceLogin: (adminUser) => set({ currentUser: adminUser }),
 
-      set((state) => {
-        const importedActIds = [...new Set(safeAttendance.map(a => a.activityId))];
-        const untouchedAttendance = state.attendance.filter(a => !importedActIds.includes(a.activityId));
-        return {
-          students: [...state.students, ...safeStudents],
-          activities: [...state.activities, ...safeActivities],
-          attendance: [...untouchedAttendance, ...safeAttendance]
-        };
-      });
-    } catch (e) { alert("Bulk import validation failed: " + e.message); }
-  },
+      // ── Edit admin (IDOR: only self or main admin) ───────────────────────
+      editAdmin: async (adminId, updatedAdminData) => {
+        try {
+          const { admins, currentUser } = get();
+          const isSelf      = currentUser?.id === adminId;
+          const isMainAdmin = currentUser?.id === 1;
+          if (!isSelf && !isMainAdmin) { alert('You can only edit your own admin profile.'); return; }
+          const safeData = deepSanitize(updatedAdminData);
+          delete safeData.id;
+          if (safeData.password && safeData.password.length >= 8) {
+            safeData.password = await hashPassword(safeData.password, String(adminId));
+          } else if (safeData.password && safeData.password.length > 0) {
+            alert('Password must be at least 8 characters.'); return;
+          } else {
+            delete safeData.password;
+          }
+          const newAdmins = admins.map(a => a.id === adminId ? { ...a, ...safeData } : a);
+          set({ admins: newAdmins });
+          if (currentUser?.id === adminId) {
+            const { password: _pw, ...safeUpdate } = safeData;
+            set({ currentUser: { ...currentUser, ...safeUpdate } });
+          }
+        } catch (e) { alert(e.message); }
+      },
+
+      // ── Logout ──────────────────────────────────────────────────────────
+      logout: () => set({ currentUser: null, sessionExpiry: null }),
+
+      // ── Forgot Password — Firestore-based OTP flow ───────────────────────
+      // Step 1: generate OTP → store hash in Firestore → email via Google Script
+      requestPasswordReset: async (email) => {
+        try {
+          const safeEmail = email.toLowerCase().trim();
+          const otp       = String(Math.floor(100000 + Math.random() * 900000));
+          const otpHash   = await hashSHA256(otp); // SHA-256 of OTP is fine (short-lived, 5 min)
+          const expiry    = Date.now() + 5 * 60 * 1000;
+          const emailKey  = safeEmail.replace(/[.@+]/g, '_');
+
+          if (!db) throw new Error('Firebase not available.');
+          const snap    = await getDoc(otpDocRef());
+          const current = snap.exists() ? snap.data() : {};
+          await setDoc(otpDocRef(), { ...current, [emailKey]: { otpHash, expiry } });
+
+          // Send OTP via Google Apps Script (fire-and-forget, no-cors)
+          const { webhookUrl } = get();
+          await callWebhook(webhookUrl, { type: 'otp_reset', targetEmail: safeEmail, otp, adminEmail: safeEmail });
+          return true;
+        } catch (e) { console.error(e); return false; }
+      },
+
+      // Step 2: verify OTP against Firestore hash
+      verifyOtp: async (email, otp) => {
+        try {
+          const safeEmail = email.toLowerCase().trim();
+          const emailKey  = safeEmail.replace(/[.@+]/g, '_');
+          if (!db) return false;
+          const snap = await getDoc(otpDocRef());
+          if (!snap.exists()) return false;
+          const record = snap.data()[emailKey];
+          if (!record || Date.now() > record.expiry) return false;
+          const inputHash = await hashSHA256(String(otp).trim());
+          if (inputHash !== record.otpHash) return false;
+          // Invalidate OTP immediately (one-time use)
+          const updated = { ...snap.data() };
+          delete updated[emailKey];
+          await setDoc(otpDocRef(), updated);
+          return true;
+        } catch (e) { console.error(e); return false; }
+      },
+
+      // Step 3: apply new password after OTP verified
+      applyPasswordReset: async (email, newPassword) => {
+        try {
+          const { admins } = get();
+          const admin = admins.find(a => (a.email || '').toLowerCase() === email.toLowerCase().trim());
+          if (!admin) return false;
+          const hash      = await hashPassword(newPassword, String(admin.id));
+          const newAdmins = admins.map(a => a.id === admin.id ? { ...a, password: hash } : a);
+          set({ admins: newAdmins });
+          return true;
+        } catch (e) { console.error(e); return false; }
+      },
+
+      // ── Batch / Student / Activity / Attendance (unchanged) ─────────────
+      addBatch: (name) => {
+        try {
+          const cName = sanitizeStrict(name, 'name');
+          set((s) => ({ batches: [...s.batches, { id: Date.now(), name: cName }] }));
+        } catch (e) { alert(e.message); }
+      },
+      deleteBatch: (id) => set((s) => {
+        const actIds = s.activities.filter(a => a.batchId === id).map(a => a.id);
+        return { batches: s.batches.filter(b => b.id !== id), students: s.students.filter(s => s.batchId !== id), activities: s.activities.filter(a => a.batchId !== id), attendance: s.attendance.filter(a => !actIds.includes(a.activityId)) };
+      }),
+      updateBatch: (updated) => { try { const s = deepSanitize(updated); if (s) set((st) => ({ batches: st.batches.map(b => b.id === s.id ? s : b) })); } catch (e) { alert(e.message); } },
+      addStudent:    (student)  => { try { const s = deepSanitize(student);  if (s) set((st) => ({ students:    [...st.students,    { ...s, id: Date.now() }] })); } catch (e) { alert(e.message); } },
+      updateStudent: (updated)  => { try { const s = deepSanitize(updated);  if (s) set((st) => ({ students:    st.students.map(x => x.id === s.id ? s : x) })); } catch (e) { alert(e.message); } },
+      deleteStudent: (id) => set((s) => ({ students: s.students.filter(x => x.id !== id), attendance: s.attendance.filter(a => a.studentId !== id) })),
+      addActivity:    (act)     => { try { const s = deepSanitize(act);      if (s) set((st) => ({ activities:  [...st.activities,  { ...s, id: Date.now() }] })); } catch (e) { alert(e.message); } },
+      updateActivity: (updated) => { try { const s = deepSanitize(updated);  if (s) set((st) => ({ activities:  st.activities.map(x => x.id === s.id ? s : x) })); } catch (e) { alert(e.message); } },
+      deleteActivity: (id) => set((s) => ({ activities: s.activities.filter(x => x.id !== id), attendance: s.attendance.filter(a => a.activityId !== id) })),
+      saveAttendance: (activityId, records) => set((s) => ({ attendance: [...s.attendance.filter(a => a.activityId !== activityId), ...records] })),
+      bulkImport: (newStudents, newActivities, newAttendance) => {
+        try {
+          const ss = deepSanitize(newStudents) || [], sa = deepSanitize(newActivities) || [], sat = deepSanitize(newAttendance) || [];
+          set((state) => {
+            const ids = [...new Set(sat.map(a => a.activityId))];
+            return { students: [...state.students, ...ss], activities: [...state.activities, ...sa], attendance: [...state.attendance.filter(a => !ids.includes(a.activityId)), ...sat] };
+          });
+        } catch (e) { alert('Bulk import validation failed: ' + e.message); }
+      },
     }),
     {
       name: 'student-manager-auth',
       partialize: (state) => ({
-        // sessionToken and currentUser.password are intentionally excluded
-        // from localStorage — they must never be persisted
-        currentUser: state.currentUser
-          ? (({ password, ...rest }) => rest)(state.currentUser)
-          : null,
-        adminEmail: state.adminEmail,
-        // sessionExpiry IS persisted so the browser can check it on reload
-        sessionExpiry: state.sessionExpiry,
+        // password hash is NEVER persisted — only safe public fields
+        currentUser:   state.currentUser ? (({ password, ...rest }) => rest)(state.currentUser) : null,
+        adminEmail:    state.adminEmail,
+        sessionExpiry: state.sessionExpiry, // persisted to check on reload
+        // webhookUrl intentionally excluded — loaded fresh from Firestore on boot
       }),
     }
   )
 );
 
-// Automatic sync to Firebase Firestore DB
+// ── Auto-sync all state changes to Firestore ────────────────────────────────
 useStore.subscribe(async (state, prevState) => {
-  // Only sync if data has actually been bootstrapped from server first
   if (!state.isLoadedFromServer) return;
-  if (!prevState.isLoadedFromServer && state.isLoadedFromServer) return; // Ignore the initial load tick
+  if (!prevState.isLoadedFromServer && state.isLoadedFromServer) return;
 
   const snapshot = {
-    admins: state.admins,
-    batches: state.batches,
-    students: state.students,
-    activities: state.activities,
-    attendance: state.attendance,
-    pendingUsers: state.pendingUsers
+    admins:       state.admins,
+    batches:      state.batches,
+    students:     state.students,
+    activities:   state.activities,
+    attendance:   state.attendance,
+    pendingUsers: state.pendingUsers,
+    webhookUrl:   state.webhookUrl,   // persisted in Firestore so it survives redeployment
   };
 
   try {
     if (!db) return;
-    const docRef = doc(db, 'student_manager', 'main_data');
-    await setDoc(docRef, snapshot);
+    await setDoc(mainDocRef(), snapshot);
   } catch (error) {
     console.error('Failed to sync Firebase Database:', error);
-    alert('FIREBASE CLOUD FIREWALL ERROR: ' + error.message + '\n\nYour data is NOT saving securely to the Cloud because your Firestore Rules are still blocking writes. Please ensure they are set to "allow read, write: if true;" and published in your Firebase Console.');
+    alert('FIREBASE SYNC ERROR: ' + error.message + '\n\nCheck your Firestore Rules!');
   }
 });

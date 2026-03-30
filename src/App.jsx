@@ -1,38 +1,13 @@
 import { useState, useEffect } from 'react';
-import { useStore } from './store';
+import { useStore, callWebhook } from './store';
 import { exportToExcel, exportActivityAttendance, exportActivitiesGrid, checkRateLimit } from './utils';
 import * as XLSX from 'xlsx';
 import { Download, LogOut, Users, BookOpen, BarChart3, ChevronLeft, Plus, Trash2, CheckCircle2, Settings } from 'lucide-react';
 
-// ─── CSRF Token Bootstrap ─────────────────────────────────────────────────────
-// Fetched once on app load; attached to every /api/ request automatically.
-let _csrfToken = '';
-
-// Base URL for all /api/ calls.
-// Dev:  '' (empty → Vite proxy → localhost:5000)
-// Prod: set VITE_API_BASE=https://your-backend.onrender.com in .env
-const API_BASE = import.meta.env.VITE_API_BASE || '';
-
-fetch(`${API_BASE}/api/csrf-token`)
-  .then(r => r.json())
-  .then(d => { _csrfToken = d.token; })
-  .catch(() => {});
-
-export async function apiFetch(url, options = {}) {
-  return fetch(`${API_BASE}${url}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-CSRF-Token': _csrfToken,
-      ...(options.headers || {}),
-    },
-  });
-}
 
 export default function App() {
   const { currentUser, logout, isLoadedFromServer, loadFromServer } = useStore();
   const sessionExpiry = useStore(s => s.sessionExpiry);
-  const sessionToken  = useStore(s => s.sessionToken);
   const [currentView, setCurrentView] = useState('DASHBOARD');
   const [activeBatchId, setActiveBatchId] = useState(null);
   const [activeActivityId, setActiveActivityId] = useState(null);
@@ -43,29 +18,14 @@ export default function App() {
     if (!isLoadedFromServer) loadFromServer();
   }, [isLoadedFromServer, loadFromServer]);
 
-  // Session expiry guard — check client-side timestamp every minute
-  // and re-validate against the server every 5 minutes
+  // Session expiry guard — client-side only (no server needed)
   useEffect(() => {
-    if (!currentUser) return;
-    const checkSession = async () => {
-      // Client-side expiry check
-      if (sessionExpiry && Date.now() > sessionExpiry) {
-        await logout();
-        return;
-      }
-      // Server-side session re-validation every 5 min
-      if (sessionToken) {
-        try {
-          const r = await fetch('/api/auth/check', { headers: { 'x-session-token': sessionToken } });
-          const d = await r.json();
-          if (!d.valid) await logout();
-        } catch { /* server unreachable — trust client expiry */ }
-      }
-    };
-    checkSession(); // immediate check on mount
-    const id = setInterval(checkSession, 5 * 60 * 1000); // every 5 minutes
+    if (!currentUser || !sessionExpiry) return;
+    const check = () => { if (Date.now() > sessionExpiry) logout(); };
+    check();
+    const id = setInterval(check, 60 * 1000); // check every minute
     return () => clearInterval(id);
-  }, [currentUser, sessionExpiry, sessionToken, logout]);
+  }, [currentUser, sessionExpiry, logout]);
 
   if (!isLoadedFromServer) {
     return (
@@ -79,8 +39,8 @@ export default function App() {
 
   if (!currentUser) return <LoginView />;
 
-  const handleLogout = async () => {
-    await logout();
+  const handleLogout = () => {
+    logout();
     setCurrentView('DASHBOARD');
   };
 
@@ -137,7 +97,7 @@ export default function App() {
 }
 
 function LoginView() {
-  const { login, registerFirstAdmin, submitSignupRequest, adminEmail, admins } = useStore();
+  const { login, registerFirstAdmin, submitSignupRequest, adminEmail, admins, webhookUrl } = useStore();
   const [view, setView] = useState(admins.length === 0 ? 'SETUP' : 'LOGIN');
   const [u, setU] = useState('');
   const [email, setEmail] = useState('');
@@ -170,21 +130,14 @@ function LoginView() {
       return;
     }
 
-    if (submitSignupRequest(u, email, p)) {
+    if (await submitSignupRequest(u, email, p)) {
       try {
-        const { adminEmail } = useStore.getState();
-        // Route through backend proxy — webhook URL stays server-side only
-        await apiFetch('/api/notify', {
-          method: 'POST',
-          body: JSON.stringify({ username: u, email: email, adminEmail: adminEmail })
-        });
-      } catch (err) {
-        console.error('Notification error:', err);
-      }
-      
-      alert('Registration request recorded securely! The administrator will be notified via our secure Google Services system.');
-      setView('LOGIN');
-      setU(''); setEmail(''); setP('');
+        const { webhookUrl, adminEmail } = useStore.getState();
+        // Direct call to Google Apps Script — no server needed
+        await callWebhook(webhookUrl, { username: u, email, adminEmail });
+      } catch (err) { console.error('Notification error:', err); }
+      alert('Registration request recorded! The administrator will be notified.');
+      setView('LOGIN'); setU(''); setEmail(''); setP('');
     } else {
       alert('This Email or Username is already an approved Administrator!');
     }
@@ -231,77 +184,63 @@ function LoginView() {
 }
 
 function ForgotPasswordView({ onBack }) {
-  const { applyPasswordReset } = useStore();
-  const [step, setStep]           = useState('EMAIL');   // EMAIL | OTP | PASSWORD | SUCCESS
-  const [emailVal, setEmailVal]   = useState('');
-  const [otp, setOtp]             = useState(['','','','','','']);
-  const [resetToken, setResetToken] = useState('');
-  const [newPw, setNewPw]         = useState('');
+  const { requestPasswordReset, verifyOtp, applyPasswordReset } = useStore();
+  const [step, setStep]         = useState('EMAIL');
+  const [emailVal, setEmailVal] = useState('');
+  const [otp, setOtp]           = useState(['','','','','','']);
+  const [newPw, setNewPw]       = useState('');
   const [confirmPw, setConfirmPw] = useState('');
-  const [loading, setLoading]     = useState(false);
-  const [error, setError]         = useState('');
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState('');
   const otpRefs = Array.from({ length: 6 }, () => ({ current: null }));
 
-  const cardStyle = { width: 420, padding: '2.5rem' };
+  const cardStyle  = { width: 420, padding: '2.5rem' };
   const errorStyle = { color: 'var(--danger, #f87171)', fontSize: '0.85rem', marginBottom: '1rem', textAlign: 'center' };
   const muteStyle  = { color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', marginBottom: '1.5rem', lineHeight: 1.5 };
 
-  // Step 1 — request OTP
-  const requestOtp = async (e) => {
-    e.preventDefault();
-    setError('');
+  // Step 1 — generate OTP in browser, store hash in Firestore, email via Google Script
+  const handleRequestOtp = async (e) => {
+    e.preventDefault(); setError('');
     if (!emailVal.trim()) { setError('Please enter your email address.'); return; }
     setLoading(true);
     try {
-      const res  = await apiFetch('/api/forgot-password', { method: 'POST', body: JSON.stringify({ email: emailVal.trim() }) });
-      const data = await res.json();
-      if (!res.ok) { setError(data.error || 'Request failed.'); return; }
-      setStep('OTP');
-    } catch { setError('Could not reach the server.'); }
-    finally   { setLoading(false); }
+      await requestPasswordReset(emailVal.trim());
+      setStep('OTP'); // Always advance — prevents email enumeration
+    } catch (err) { setError('Something went wrong. Please try again.'); }
+    finally { setLoading(false); }
   };
 
-  // Step 2 — verify OTP
-  const verifyOtp = async (e) => {
-    e.preventDefault();
-    setError('');
+  // Step 2 — verify OTP against Firestore hash (one-time, 5 min expiry)
+  const handleVerifyOtp = async (e) => {
+    e.preventDefault(); setError('');
     const code = otp.join('');
     if (code.length < 6) { setError('Please enter the full 6-digit code.'); return; }
     setLoading(true);
     try {
-      const res  = await apiFetch('/api/verify-otp', { method: 'POST', body: JSON.stringify({ email: emailVal.trim(), otp: code }) });
-      const data = await res.json();
-      if (!res.ok) { setError(data.error || 'Invalid code.'); return; }
-      setResetToken(data.resetToken);
+      const ok = await verifyOtp(emailVal.trim(), code);
+      if (!ok) { setError('Invalid or expired code. Please request a new one.'); return; }
       setStep('PASSWORD');
-    } catch { setError('Could not reach the server.'); }
-    finally   { setLoading(false); }
+    } catch { setError('Verification failed. Please try again.'); }
+    finally { setLoading(false); }
   };
 
-  // Step 3 — set new password
-  const resetPassword = async (e) => {
-    e.preventDefault();
-    setError('');
-    if (newPw.length < 6)       { setError('Password must be at least 6 characters.'); return; }
-    if (newPw !== confirmPw)    { setError('Passwords do not match.'); return; }
+  // Step 3 — set new password → update in Firestore via store
+  const handleResetPassword = async (e) => {
+    e.preventDefault(); setError('');
+    if (newPw.length < 8)    { setError('Password must be at least 8 characters.'); return; }
+    if (newPw !== confirmPw) { setError('Passwords do not match.'); return; }
     setLoading(true);
     try {
-      const res  = await apiFetch('/api/reset-password', { method: 'POST', body: JSON.stringify({ resetToken, newPassword: newPw }) });
-      const data = await res.json();
-      if (!res.ok) { setError(data.error || 'Reset failed.'); return; }
-      // Apply the server-hashed password to the Zustand store → auto-syncs to Firestore
-      applyPasswordReset(data.email, data.hashedPassword);
+      const ok = await applyPasswordReset(emailVal.trim(), newPw);
+      if (!ok) { setError('Could not find account. Please contact your administrator.'); return; }
       setStep('SUCCESS');
-    } catch { setError('Could not reach the server.'); }
-    finally   { setLoading(false); }
+    } catch { setError('Reset failed. Please try again.'); }
+    finally { setLoading(false); }
   };
 
-  // OTP digit input handler
   const handleOtpChange = (idx, val) => {
     const digit = val.replace(/\D/, '').slice(-1);
-    const next  = [...otp];
-    next[idx]   = digit;
-    setOtp(next);
+    const next  = [...otp]; next[idx] = digit; setOtp(next);
     if (digit && idx < 5) otpRefs[idx + 1].current?.focus();
   };
   const handleOtpKey = (idx, e) => {
@@ -311,7 +250,7 @@ function ForgotPasswordView({ onBack }) {
   return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       {step === 'EMAIL' && (
-        <form onSubmit={requestOtp} className="glass-card animate-fade-in" style={cardStyle}>
+        <form onSubmit={handleRequestOtp} className="glass-card animate-fade-in" style={cardStyle}>
           <h2 style={{ marginBottom: '0.5rem', textAlign: 'center' }}>Reset Password</h2>
           <p style={muteStyle}>Enter the email address linked to your admin account. A one-time code will be sent to that address.</p>
           {error && <p style={errorStyle}>{error}</p>}
@@ -322,7 +261,7 @@ function ForgotPasswordView({ onBack }) {
       )}
 
       {step === 'OTP' && (
-        <form onSubmit={verifyOtp} className="glass-card animate-fade-in" style={cardStyle}>
+        <form onSubmit={handleVerifyOtp} className="glass-card animate-fade-in" style={cardStyle}>
           <h2 style={{ marginBottom: '0.5rem', textAlign: 'center' }}>Enter OTP</h2>
           <p style={muteStyle}>A 6-digit reset code was sent to <strong>{emailVal}</strong>. It expires in 5 minutes.</p>
           {error && <p style={errorStyle}>{error}</p>}
@@ -354,11 +293,11 @@ function ForgotPasswordView({ onBack }) {
       )}
 
       {step === 'PASSWORD' && (
-        <form onSubmit={resetPassword} className="glass-card animate-fade-in" style={cardStyle}>
+        <form onSubmit={handleResetPassword} className="glass-card animate-fade-in" style={cardStyle}>
           <h2 style={{ marginBottom: '0.5rem', textAlign: 'center' }}>New Password</h2>
           <p style={muteStyle}>Set a new password for <strong>{emailVal}</strong>. This only applies to your own account.</p>
           {error && <p style={errorStyle}>{error}</p>}
-          <input className="input-field" type="password" placeholder="New password (min 6 chars)" value={newPw} onChange={e => setNewPw(e.target.value)} required autoFocus />
+          <input className="input-field" type="password" placeholder="New password (min 8 chars)" value={newPw} onChange={e => setNewPw(e.target.value)} required autoFocus />
           <input className="input-field" type="password" placeholder="Confirm new password" value={confirmPw} onChange={e => setConfirmPw(e.target.value)} required />
           <button type="submit" className="btn btn-primary" style={{ width: '100%', marginBottom: '1rem' }} disabled={loading}>{loading ? 'Saving…' : 'Reset Password'}</button>
         </form>
@@ -1419,8 +1358,10 @@ function SettingsView({ onBack }) {
                     <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.15rem' }}>Password: {admin.id === currentUser?.id ? '••••••••' : '(Hidden)'}</div>
                  </div>
                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                   <button className="btn btn-secondary" onClick={() => startEditAdmin(admin)}>Edit Profile</button>
-                   {admin.id !== 1 && admin.id !== currentUser?.id && (
+                   {(currentUser?.id === 1 || currentUser?.id === admin.id) && (
+                     <button className="btn btn-secondary" onClick={() => startEditAdmin(admin)}>Edit Profile</button>
+                   )}
+                   {currentUser?.id === 1 && admin.id !== 1 && admin.id !== currentUser?.id && (
                      <button className="btn btn-danger" onClick={() => { if(confirm('Are you sure you want to remove this admin?')) removeAdmin(admin.id); }}>Remove</button>
                    )}
                    {admin.id === 1 && <span style={{ color: 'var(--primary)', fontWeight: 'bold', fontSize: '0.875rem', marginLeft: '0.5rem' }}>Main Admin</span>}

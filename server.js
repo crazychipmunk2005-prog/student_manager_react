@@ -151,13 +151,14 @@ app.use(helmet({
 const allowedOrigins = (process.env.ALLOWED_ORIGIN || 'http://localhost:5173').split(',').map(s => s.trim());
 app.use(cors({
   origin: (origin, cb) => {
+    // Allow requests with no origin (e.g. server-to-server) only in dev
     if (!origin && !IS_PROD) return cb(null, true);
     if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
     logger.security('CORS origin rejected', { origin });
     cb(new Error(`CORS policy: origin ${origin} not allowed`));
   },
   methods: ['GET', 'POST', 'PUT'],
-  allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Session-Token'],
+  allowedHeaders: ['Content-Type'],
 }));
 
 app.use(express.json({ limit: '1mb' }));

@@ -78,11 +78,19 @@ export const checkRateLimit = (action, maxAttempts, windowMs) => {
   }
 };
 
-export const hashPassword = async (password) => {
-  const msgBuffer = new TextEncoder().encode(password);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+// PBKDF2 — strong browser-native password hashing (100k iterations, SHA-256)
+// salt = admin.id.toString() — unique per account, never changes
+export const hashPassword = async (password, salt = '') => {
+  const enc         = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), { name: 'PBKDF2' }, false, ['deriveBits']);
+  const bits        = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: enc.encode('nss-mgr-v2-' + salt), iterations: 100000, hash: 'SHA-256' }, keyMaterial, 256);
+  return '$pbkdf2$' + Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');
+};
+
+// Legacy SHA-256 — used only for: OTP hashing + detecting/migrating old passwords
+export const hashSHA256 = async (input) => {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
 };
 
 export const exportToExcel = (batch, students, activities, attendance) => {
